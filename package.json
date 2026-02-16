@@ -1,0 +1,33 @@
+{
+  "name": "backend2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=.env src/index.js",
+    "start": "node src/index.js",
+    "worker": "node --env-file=.env scripts/worker.js",
+    "prisma:generate": "prisma generate",
+    "test:b0": "node --env-file=.env scripts/test-b0-utilities.js",
+    "test:b0:all": "node --env-file=.env scripts/test-b0-utilities.js --with-generate"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.989.0",
+    "@prisma/adapter-pg": "^7.1.0",
+    "@prisma/client": "^7.1.0",
+    "axios": "^1.13.5",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "ioredis": "^5.9.3",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "openai": "^6.21.0",
+    "pg": "^8.13.1",
+    "prisma": "^7.1.0",
+    "replicate": "^1.4.0"
+  }
+}

@@ -1,0 +1,1099 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model Brand {
+  id                  String          @id @default(cuid())
+  shopDomain          String          @unique
+  name                String
+  description         String?
+  logoUrl             String?
+  websiteUrl          String?
+  isActive            Boolean         @default(true)
+  taxRate             Float?
+  pageConfig          String?
+  shopifyWriteEnabled Boolean         @default(false)
+  lastSyncedAt        DateTime?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  brandScore          Float           @default(0)
+  brandAdmins         BrandAdmin[]
+  followers           BrandFollower[]
+  pageViews           BrandPageView[]
+  feedPosts           FeedPost[]
+  microStores         MicroStore[]
+  products            Product[]
+}
+
+model Product {
+  id                         String                   @id @default(cuid())
+  brandId                    String
+  source                     String                   @default("shopify")
+  sourceProductId            String
+  title                      String
+  descriptionHtml            String?
+  status                     String                   @default("active")
+  handle                     String
+  tags                       String?
+  product_type               String?
+  vendor                     String?
+  gender                     String?
+  category_lvl1              String?
+  category_lvl2              String?
+  category_lvl3              String?
+  fabric_primary             String?
+  pattern                    String?
+  fit                        String?
+  length                     String?
+  coverage                   String?
+  color_primary              String?
+  color_family               String?
+  style_family               String?
+  occasion_primary           String?
+  occasion_secondary         String?
+  mood_vibe                  String?
+  trend_tags                 String?
+  price_band                 String?
+  sleeve_length              String?
+  sleeve_style               String?
+  enrichedAt                 DateTime?
+  enrichmentStatus           String?
+  enrichmentError            String?
+  embedding                  String?
+  embedding_vector           Unsupported("vector")?
+  embeddingGeneratedAt       DateTime?
+  visual_embedding           String?
+  visual_embedding_vector    Unsupported("vector")?
+  visualEmbeddingGeneratedAt DateTime?
+  createdAt                  DateTime                 @default(now())
+  updatedAt                  DateTime                 @updatedAt
+  syncedAt                   DateTime?
+  ftsVector                  Unsupported("tsvector")?
+  cartItems                  CartItem[]
+  microStoreProducts         MicroStoreProduct[]
+  brand                      Brand                    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  images                     ProductImage[]
+  intelligence               ProductIntelligence?
+  overrides                  ProductOverride[]
+  variants                   ProductVariant[]
+  trendMappings              TrendProductMapping[]
+  wishlistItems              Wishlist[]
+
+  @@index([category_lvl1])
+  @@index([category_lvl2])
+  @@index([enrichmentStatus])
+  @@index([status, updatedAt])
+  @@index([brandId, status, updatedAt])
+}
+
+model ProductVariant {
+  id                String   @id @default(cuid())
+  productId         String
+  sourceVariantId   String
+  sku               String?
+  price             String   @default("0.00")
+  compareAtPrice    String?
+  option1           String?
+  option2           String?
+  option3           String?
+  inventoryQuantity Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([sourceVariantId])
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  src       String
+  position  Int      @default(0)
+  alt       String?
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([position])
+}
+
+model ProductIntelligence {
+  id            String   @id @default(cuid())
+  productId     String   @unique
+  views         Int      @default(0)
+  clicks        Int      @default(0)
+  conversions   Int      @default(0)
+  avgRating     Float?
+  reviewCount   Int      @default(0)
+  trendingScore Float    @default(0)
+  metadata      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model MicroStore {
+  id              String               @id @default(cuid())
+  brandId         String?
+  name            String
+  description     String?
+  logoUrl         String?
+  coverImageUrl   String?
+  heroVideoUrl    String?
+  featured        Boolean              @default(false)
+  isActive        Boolean              @default(true)
+  order           Int                  @default(0)
+  status          String               @default("draft")
+  createdBy       String               @default("admin")
+  createdByUserId String?
+  vibe            String?
+  trends          String?
+  categories      String?
+  tags            String?
+  styleNotes      String?
+  config          String?
+  minProducts     Int                  @default(20)
+  maxProducts     Int                  @default(50)
+  productCount    Int                  @default(0)
+  lastChangedAt   DateTime?
+  lastGeneratedAt DateTime?
+  sections        String?
+  publishedAt     DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  microstoreScore Float                @default(0)
+  brand           Brand?               @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  followers       MicroStoreFollower[]
+  products        MicroStoreProduct[]
+  views           MicroStoreView[]
+
+  @@index([brandId])
+  @@index([featured])
+  @@index([order])
+  @@index([status])
+  @@index([createdBy])
+  @@index([createdByUserId])
+  @@index([lastChangedAt])
+}
+
+model ProductOverride {
+  id        String   @id @default(cuid())
+  productId String
+  fieldName String
+  oldValue  String?
+  newValue  String?
+  updatedBy String?
+  updatedAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([fieldName])
+}
+
+model FeedPost {
+  id              String    @id @default(cuid())
+  type            String
+  title           String
+  subtitle        String?
+  imageUrl        String
+  href            String?
+  meta            String?
+  isActive        Boolean   @default(true)
+  order           Int       @default(0)
+  publishedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  approvalStatus  String    @default("pending")
+  approvedAt      DateTime?
+  approvedBy      String?
+  brandId         String?
+  contentType     String    @default("image")
+  createdBy       String    @default("admin")
+  createdByUserId String?
+  rejectionReason String?
+  videoUrl        String?
+  approver        User?     @relation("FeedPostApprover", fields: [approvedBy], references: [id])
+  brand           Brand?    @relation(fields: [brandId], references: [id])
+  creator         User?     @relation("FeedPostCreator", fields: [createdByUserId], references: [id])
+
+  @@index([type])
+  @@index([isActive])
+  @@index([order])
+  @@index([publishedAt])
+  @@index([approvalStatus])
+  @@index([createdBy])
+  @@index([brandId])
+  @@index([createdByUserId])
+}
+
+model User {
+  id                     String                @id @default(cuid())
+  email                  String                @unique
+  passwordHash           String
+  firstName              String?
+  lastName               String?
+  phone                  String?
+  emailVerified          Boolean               @default(false)
+  isActive               Boolean               @default(true)
+  role                   String                @default("user")
+  defaultShippingAddress String?
+  defaultBillingAddress  String?
+  preferences            String?
+  avatarPreference       String?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  lastLoginAt            DateTime?
+  brandAdmins            BrandAdmin[]
+  brandFollowers         BrandFollower[]
+  brandPageViews         BrandPageView[]
+  cartItems              CartItem[]
+  conversations          Conversation[]
+  decisionTraces         DecisionTrace[]
+  approvedFeedPosts      FeedPost[]            @relation("FeedPostApprover")
+  createdFeedPosts       FeedPost[]            @relation("FeedPostCreator")
+  garments               Garment[]
+  looks                  Look[]
+  marketplaceSessions    MarketplaceSession[]
+  microStoreFollowers    MicroStoreFollower[]
+  microStoreViews        MicroStoreView[]
+  orders                 Order[]
+  outfits                Outfit[]
+  outfitEvents           OutfitEvent[]
+  personaAssignment      PersonaAssignment?
+  sessionIntents         SessionIntent[]
+  signals                Signal[]
+  styleProfile           StyleProfile?
+  styleReports           StyleReport[]
+  userEmbedding          UserEmbedding?
+  userEvents             UserEvent[]
+  userImages             UserImage[]
+  lookInteractions       UserLookInteraction[]
+  userPhotos             UserPhoto[]
+  userProfile            UserProfile?
+  styleHistory           UserStyleHistory[]
+  wardrobeItems          Wardrobe[]
+  wishlistItems          Wishlist[]
+  agentMemories          AgentMemory[]
+
+  @@index([email])
+  @@index([isActive])
+  @@index([role])
+}
+
+model MarketplaceSession {
+  id        String   @id
+  userId    String
+  email     String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Wardrobe {
+  id                   String    @id @default(cuid())
+  userId               String
+  imageUrl             String
+  brand                String?
+  category             String?
+  color                String?
+  size                 String?
+  tags                 String?
+  embedding            String?
+  visionAnalysis       String?
+  embeddingGeneratedAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([category])
+  @@index([color])
+}
+
+model Order {
+  id                   String      @id @default(cuid())
+  userId               String?
+  orderNumber          String      @unique
+  status               String      @default("pending")
+  paymentStatus        String      @default("pending")
+  customerEmail        String?
+  customerName         String?
+  customerPhone        String?
+  shippingAddress      String
+  billingAddress       String?
+  subtotal             String      @default("0.00")
+  shipping             String      @default("0.00")
+  tax                  String      @default("0.00")
+  discount             String      @default("0.00")
+  total                String      @default("0.00")
+  currency             String      @default("INR")
+  paymentMethod        String?
+  paymentTransactionId String?
+  razorpayOrderId      String?
+  shopifyOrderId       String?
+  shopDomain           String?
+  notes                String?
+  metadata             String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  user                 User?       @relation(fields: [userId], references: [id])
+  items                OrderItem[]
+
+  @@index([userId])
+  @@index([orderNumber])
+  @@index([status])
+  @@index([customerEmail])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id           String   @id @default(cuid())
+  orderId      String
+  productId    String
+  variantId    String?
+  productTitle String
+  variantTitle String?
+  quantity     Int
+  unitPrice    String
+  totalPrice   String
+  imageUrl     String?
+  createdAt    DateTime @default(now())
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model BrandAdmin {
+  id        String   @id @default(cuid())
+  userId    String
+  brandId   String
+  createdAt DateTime @default(now())
+  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, brandId])
+  @@index([userId])
+  @@index([brandId])
+}
+
+model MicroStoreProduct {
+  id           String     @id @default(cuid())
+  microStoreId String
+  productId    String
+  order        Int        @default(0)
+  addedAt      DateTime   @default(now())
+  microStore   MicroStore @relation(fields: [microStoreId], references: [id], onDelete: Cascade)
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([microStoreId, productId])
+  @@index([microStoreId])
+  @@index([productId])
+}
+
+model MicroStoreFollower {
+  id           String     @id @default(cuid())
+  microStoreId String
+  userId       String
+  createdAt    DateTime   @default(now())
+  microStore   MicroStore @relation(fields: [microStoreId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([microStoreId, userId])
+  @@index([microStoreId])
+  @@index([userId])
+}
+
+model BrandFollower {
+  id        String   @id @default(cuid())
+  brandId   String
+  userId    String
+  createdAt DateTime @default(now())
+  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([brandId, userId])
+  @@index([brandId])
+  @@index([userId])
+}
+
+model BrandPageView {
+  id        String   @id @default(cuid())
+  brandId   String
+  userId    String?
+  ipAddress String?
+  userAgent String?
+  referrer  String?
+  viewedAt  DateTime @default(now())
+  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([brandId])
+  @@index([viewedAt])
+  @@index([userId])
+}
+
+model MicroStoreView {
+  id           String     @id @default(cuid())
+  microStoreId String
+  userId       String?
+  ipAddress    String?
+  userAgent    String?
+  referrer     String?
+  viewedAt     DateTime   @default(now())
+  microStore   MicroStore @relation(fields: [microStoreId], references: [id], onDelete: Cascade)
+  user         User?      @relation(fields: [userId], references: [id])
+
+  @@index([microStoreId])
+  @@index([viewedAt])
+  @@index([userId])
+}
+
+model Wishlist {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  variantId String?
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId, variantId])
+  @@index([userId])
+  @@index([productId])
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  variantId String?
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId, variantId])
+  @@index([userId])
+  @@index([productId])
+}
+
+model Signal {
+  id           String   @id @default(uuid())
+  userId       String
+  eventType    String
+  entityType   String
+  entityId     String
+  rewardWeight Float
+  metadata     String?
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([eventType])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model UserEmbedding {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  embedding String
+  updatedAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PersonaAssignment {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  persona    String
+  clusterId  Int?
+  confidence Float
+  assignedAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([persona])
+  @@index([clusterId])
+}
+
+model UserStyleHistory {
+  id          String   @id @default(uuid())
+  userId      String
+  styleVector String
+  persona     String?
+  styleTags   String?
+  reason      String
+  metadata    String?
+  timestamp   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([timestamp])
+  @@index([persona])
+}
+
+// B1.1 User Profile Service: style profile (hybrid), history summary + recent events, need/motivation, quiz
+model UserProfile {
+  id                         String    @id @default(uuid())
+  userId                     String    @unique
+  // Legacy: kept for existing rows; prefer styleProfileData when set
+  profileJson                Json?
+  // Style profile (hybrid: fixed fields + blob)
+  styleProfileUpdatedAt      DateTime?
+  styleProfileSource         String?
+  styleProfileData           Json?
+  // History: aggregated summary; recent events from UserEvent
+  historySummary             Json?
+  // Fashion need & motivation (User Profile Agent writes these)
+  fashionNeed                String?
+  fashionNeedUpdatedAt       DateTime?
+  fashionMotivation          String?
+  fashionMotivationUpdatedAt DateTime?
+  // Quiz (submit via API)
+  quizResponses              Json?
+  quizSubmittedAt            DateTime?
+  quizVersion                String?
+  updatedAt                  DateTime  @default(now())
+  user                       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model UserEvent {
+  id        String   @id @default(uuid())
+  userId    String?
+  sessionId String?
+  eventType String
+  productId String?
+  metadata  Json?
+  timestamp DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([eventType])
+  @@index([timestamp])
+  @@index([productId])
+}
+
+model SessionIntent {
+  id         String   @id @default(uuid())
+  sessionId  String   @unique
+  userId     String?
+  intentJson Json
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Look {
+  id           String                @id @default(uuid())
+  userId       String?
+  lookData     String
+  imageUrl     String?
+  vibe         String?
+  occasion     String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  user         User?                 @relation(fields: [userId], references: [id])
+  images       LookImage[]
+  interactions UserLookInteraction[]
+
+  @@index([userId])
+  @@index([vibe, occasion])
+}
+
+// Look classification tags: admin-managed tags for classifying user looks (used by Look Analysis)
+model LookClassificationTag {
+  id          String   @id @default(uuid())
+  name        String   @unique // slug/code (e.g. "casual", "work")
+  label       String   // display name (e.g. "Casual", "Work")
+  description String?
+  sortOrder    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([sortOrder])
+}
+
+model LookImage {
+  id          String   @id @default(uuid())
+  lookId      String
+  imageUrl    String
+  avatarType  String
+  avatarId    String?
+  prompt      String?
+  jobId       String?
+  status      String   @default("pending")
+  generatedAt DateTime @default(now())
+  look        Look     @relation(fields: [lookId], references: [id], onDelete: Cascade)
+
+  @@index([lookId])
+  @@index([status])
+}
+
+model UserLookInteraction {
+  id              String   @id @default(uuid())
+  userId          String
+  lookId          String
+  interactionType String
+  metadata        String?
+  createdAt       DateTime @default(now())
+  look            Look     @relation(fields: [lookId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([lookId])
+  @@index([interactionType])
+}
+
+model Conversation {
+  id        String                @id @default(uuid())
+  userId    String
+  title     String?
+  metadata  String?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  ConversationMessage[]
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([updatedAt])
+}
+
+model ConversationMessage {
+  id             String       @id @default(uuid())
+  conversationId String
+  role           String
+  content        String
+  imageUrl       String?       // legacy single image; prefer imageUrls
+  imageUrls      String[]      @default([]) // multi-image support
+  flowType       String?
+  flowContext    String?
+  metadata       String?
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([role])
+  @@index([createdAt])
+}
+
+model Trend {
+  id          String                @id @default(uuid())
+  trendName   String
+  description String?
+  keywords    String
+  category    String?
+  status      String                @default("active")
+  seasonality String?
+  region      String?
+  isCurated   Boolean               @default(true)
+  source      String?
+  strength    Int?                  // 1-10, 10 = strongest (B1.3)
+  parentId    String?
+  impactedItemTypes String?         // e.g. "knits, outerwear, trousers"
+  tellTaleSigns     String?         // visual/style identifiers, tell-tale signs
+  createdBy   String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  parent      Trend?                @relation("TrendHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children    Trend[]               @relation("TrendHierarchy")
+  mappings    TrendProductMapping[]
+
+  @@unique([trendName, parentId])
+  @@index([status])
+  @@index([category])
+  @@index([seasonality])
+  @@index([isCurated])
+  @@index([parentId])
+}
+
+// B1.2/B1.3 Fashion Content Service: styling rules (hybrid; strength + hierarchy)
+model StylingRule {
+  id        String       @id @default(uuid())
+  title     String?
+  body      String
+  ruleType  String?
+  category  String?
+  subject   String?
+  tags      Json?
+  source    String?
+  status    String       @default("active")
+  strength  Int?         // 1-10, 10 = very strong (B1.3)
+  parentId  String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  parent    StylingRule? @relation("StylingRuleHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children  StylingRule[] @relation("StylingRuleHierarchy")
+
+  @@index([status])
+  @@index([category])
+  @@index([ruleType])
+  @@index([parentId])
+}
+
+// B1.3: Admin / agent inputs (URL, text, image) for the Fashion Content Agent to combine
+model FashionContentSource {
+  id        String   @id @default(uuid())
+  type      String   // "url" | "text" | "image"
+  payload   String   // URL, raw text, or image URL
+  status    String   @default("pending") // "pending" | "processed"
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([type])
+}
+
+// B1.3: Safety allowlist — only these domains can be fetched by the agent for web sources
+model AllowedFashionDomain {
+  id        String   @id @default(uuid())
+  domain    String   @unique // e.g. "vogue.com" (no protocol/path)
+  createdAt DateTime @default(now())
+
+  @@index([domain])
+}
+
+model TrendProductMapping {
+  id             String   @id @default(uuid())
+  trendId        String
+  productId      String
+  relevanceScore Float
+  mappedAt       DateTime @default(now())
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  trend          Trend    @relation(fields: [trendId], references: [id], onDelete: Cascade)
+
+  @@index([trendId])
+  @@index([productId])
+  @@index([relevanceScore])
+}
+
+model UserPhoto {
+  id         String   @id @default(cuid())
+  userId     String
+  imageUrl   String
+  caption    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  collection String?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([collection])
+}
+
+model Garment {
+  id                String          @id @default(uuid())
+  userId            String
+  category          String?
+  silhouette        String?
+  color             String?
+  fabric            String?
+  confidence        Float?          @default(0.0)
+  deduplicationHash String?
+  certainty         String?
+  imageUrl          String?
+  embedding         String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outfits           WardrobeGraph[]
+
+  @@index([userId])
+  @@index([category])
+  @@index([certainty])
+  @@index([deduplicationHash])
+}
+
+model Outfit {
+  id                    String          @id @default(uuid())
+  userId                String
+  timestamp             DateTime        @default(now())
+  evaluationScore       Float?          @default(0.0)
+  evaluationReasoning   String?
+  status                String?
+  imageUrl              String?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  vibe                  String?
+  occasion              String?
+  occasions             String?
+  stylePrimary          String?
+  styleSecondary        String?
+  trendTags             String?
+  colorPrimary          String?
+  colorSecondary        String?
+  colorAccent           String?
+  colorFamily           String?
+  fabricTexture         String?
+  fabricWeight          String?
+  fabricDrape           String?
+  fabricShine           String?
+  patternType           String?
+  patternScale          String?
+  patternColors         String?
+  silhouetteType        String?
+  silhouetteDescription String?
+  fit                   String?
+  length                String?
+  sleeveLength          String?
+  neckline              String?
+  designDetails         String?
+  deconstructionData    String?
+  outfitData            String?
+  decisionTraces        DecisionTrace[]
+  user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outfitEvents          OutfitEvent[]
+  garments              WardrobeGraph[]
+
+  @@index([userId])
+  @@index([timestamp])
+  @@index([status])
+  @@index([vibe])
+  @@index([occasion])
+  @@index([colorPrimary])
+  @@index([fabricTexture])
+  @@index([patternType])
+}
+
+model StyleProfile {
+  id                       String        @id @default(uuid())
+  userId                   String        @unique
+  dominantSilhouettes      String?
+  colorPalette             String?
+  formalityRange           String?
+  riskTolerance            String?
+  confidenceScore          Float?        @default(0.0)
+  archetypePrimary         String?
+  archetypeSecondary       String?
+  archetypeConfidence      Float?        @default(0.0)
+  generatedAt              DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+  colourPaletteData        String?
+  fabricFeelData           String?
+  ideasAdjacentZone        String?
+  ideasWithinZone          String?
+  silhouetteFitData        String?
+  styleDnaKeywords         String?
+  styleDnaLine             String?
+  styleSummaryHeadline     String?
+  styleSummaryOneLiner     String?
+  styleTimingData          String?
+  stylingFocusData         String?
+  comprehensiveProfileData String?
+  user                     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  styleReports             StyleReport[]
+
+  @@index([userId])
+  @@index([archetypePrimary])
+}
+
+model StyleReport {
+  id                    String        @id @default(uuid())
+  userId                String
+  styleProfileId        String?
+  pdfUrl                String
+  generatedAt           DateTime      @default(now())
+  version               Int           @default(1)
+  emailSentAt           DateTime?
+  userConfirmed         Boolean       @default(false)
+  confirmedAt           DateTime?
+  hasJudgmentAction     Boolean       @default(false)
+  judgmentActionAt      DateTime?
+  recommendationsEarned Boolean       @default(false)
+  recommendationsSent   Boolean       @default(false)
+  recommendedBrands     String?
+  recommendedProducts   String?
+  htmlContent           String?
+  htmlGeneratedAt       DateTime?
+  styleProfile          StyleProfile? @relation(fields: [styleProfileId], references: [id], onDelete: Cascade)
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([generatedAt])
+}
+
+model UserImage {
+  id                String             @id @default(uuid())
+  userId            String
+  timestamp         DateTime           @default(now())
+  context           String?
+  rawImageUrl       String
+  derivedFeatures   String?
+  usedInReports     String?
+  usedInAgents      String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  personInfo        String?
+  outfitEventImages OutfitEventImage[]
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([context])
+  @@index([timestamp])
+}
+
+model WardrobeGraph {
+  id        String   @id @default(uuid())
+  garmentId String
+  outfitId  String
+  edgeType  String   @default("worn_in")
+  frequency Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  garment   Garment  @relation(fields: [garmentId], references: [id], onDelete: Cascade)
+  outfit    Outfit   @relation(fields: [outfitId], references: [id], onDelete: Cascade)
+
+  @@unique([garmentId, outfitId])
+  @@index([garmentId])
+  @@index([outfitId])
+  @@index([edgeType])
+}
+
+model OutfitEvent {
+  id                   String             @id @default(uuid())
+  userId               String
+  outfitId             String?
+  timestamp            DateTime           @default(now())
+  context              String?
+  bucket_scores        String?
+  bucket_model_version String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  outfit               Outfit?            @relation(fields: [outfitId], references: [id])
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  images               OutfitEventImage[]
+
+  @@index([userId, timestamp])
+  @@index([outfitId])
+}
+
+model OutfitEventImage {
+  id            String      @id @default(uuid())
+  outfitEventId String
+  userImageId   String
+  position      Int         @default(0)
+  outfitEvent   OutfitEvent @relation(fields: [outfitEventId], references: [id], onDelete: Cascade)
+  userImage     UserImage   @relation(fields: [userImageId], references: [id], onDelete: Cascade)
+
+  @@unique([outfitEventId, userImageId])
+  @@index([outfitEventId])
+  @@index([userImageId])
+}
+
+model DecisionTrace {
+  id                  String   @id @default(uuid())
+  outfitId            String
+  userId              String
+  evaluationTimestamp DateTime @default(now())
+  decisionData        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  outfit              Outfit   @relation(fields: [outfitId], references: [id], onDelete: Cascade)
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([outfitId])
+  @@index([evaluationTimestamp])
+}
+
+model AgentMemory {
+  id        String   @id @default(cuid())
+  userId    String
+  goalType  String // e.g., "shopping", "looks_builder", "style_analysis"
+  goal      Json // Stored goal object
+  plan      Json? // Stored plan object
+  outcome   Json? // Result and evaluation
+  success   Boolean
+  timestamp DateTime @default(now())
+  metadata  Json?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([goalType])
+  @@index([timestamp])
+  @@index([success])
+}
+
+model ModelConfig {
+  scope    String   @unique
+  provider String
+  model    String
+  updatedAt DateTime @updatedAt
+}
+
+model GeneratedImage {
+  id        String   @id @default(cuid())
+  url       String
+  key       String
+  userId    String?
+  prompt    String?
+  createdAt DateTime @default(now())
+}
+
+// Styling Agent improvement loop: tone avatars + playbook (goals, suggested flows)
+model StylingAvatar {
+  id                   String   @id @default(uuid())
+  name                 String
+  slug                 String   @unique
+  description          String?
+  systemPromptAddition String   // injected into agent context for tone
+  sortOrder            Int      @default(0)
+  isDefault            Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([slug])
+  @@index([isDefault])
+}
+
+model StylingAgentPlaybook {
+  id        String   @id @default(uuid())
+  type      String   // "goals" | "instruction" | "example_flow"
+  content   String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+}
