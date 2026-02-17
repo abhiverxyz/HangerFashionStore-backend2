@@ -5,6 +5,7 @@ import { asyncHandler } from "../core/asyncHandler.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { uploadFile } from "../utils/storage.js";
 import * as wardrobeDomain from "../domain/wardrobe/wardrobe.js";
+import { run as runWardrobeExtraction, suggestForItem } from "../agents/wardrobeExtractionAgent.js";
 
 const router = Router();
 const IMAGE_MIMES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
@@ -69,6 +70,68 @@ router.post(
       tags: tags || null,
     });
     res.status(201).json(item);
+  })
+);
+
+/** POST /api/wardrobe/extract-from-look — B4.6. Body: { lookId } or { imageUrl }. Or multipart file (field: file). Returns extraction + suggested product IDs per slot. */
+router.post(
+  "/extract-from-look",
+  requireAuth,
+  upload.single("file"),
+  asyncHandler(async (req, res) => {
+    const { lookId, imageUrl } = req.body || {};
+    let imageBuffer;
+    if (req.file?.buffer) {
+      imageBuffer = req.file.buffer;
+    }
+    if (!lookId && !imageUrl && !imageBuffer) {
+      return res.status(400).json({ error: "Provide lookId, imageUrl, or upload an image file" });
+    }
+    const result = await runWardrobeExtraction(
+      { lookId: lookId || undefined, imageUrl: imageUrl || undefined, imageBuffer },
+      { userId: req.userId }
+    );
+    if (result.error && result.slots.length === 0) {
+      const status = result.error === "Look not found" ? 404 : result.error.startsWith("Forbidden") ? 403 : 400;
+      return res.status(status).json({ error: result.error, slots: [], look: result.look ?? null });
+    }
+    res.json({ slots: result.slots, look: result.look ?? null, error: result.error ?? null });
+  })
+);
+
+/** POST /api/wardrobe/suggest-for-item — Get new product suggestions for one slot (resuggest). Body: { item: { description?, category_lvl1?, color_primary? }, limit? }. */
+router.post(
+  "/suggest-for-item",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = req.body || {};
+    const item = body.item;
+    if (!item || typeof item !== "object") {
+      return res.status(400).json({ error: "Body must include item: { description?, category_lvl1?, color_primary? }" });
+    }
+    const result = await suggestForItem(item, body.limit);
+    res.json(result);
+  })
+);
+
+/** POST /api/wardrobe/accept-suggestions — B4.6. Body: { productIds: string[] } or { selections: [ { productId } ] }. Creates wardrobe items for selected products. */
+router.post(
+  "/accept-suggestions",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = req.body || {};
+    let productIds = body.productIds;
+    if (Array.isArray(body.selections)) {
+      productIds = body.selections.map((s) => (typeof s === "object" && s != null ? s.productId : s)).filter(Boolean);
+    }
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ error: "Provide productIds or selections array with productId" });
+    }
+    const { created } = await wardrobeDomain.createWardrobeItemsFromProducts({
+      userId: req.userId,
+      productIds,
+    });
+    res.status(201).json({ created });
   })
 );
 

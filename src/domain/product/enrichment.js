@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { getPrisma } from "../../core/db.js";
 import { chat, embed } from "../../utils/llm.js";
 
@@ -77,7 +78,7 @@ export async function enrichProduct(productId) {
       data: updateData,
     });
 
-    // Optional: store text embedding for search (embedding field as JSON array string)
+    // Optional: store text embedding for search (embedding + pgvector embedding_vector)
     try {
       const embedText = [product.title, product.descriptionHtml, result.category_lvl1, result.color_primary].filter(Boolean).join(" ");
       const vector = await embed(embedText.slice(0, 8000));
@@ -85,6 +86,10 @@ export async function enrichProduct(productId) {
         where: { id: productId },
         data: { embedding: JSON.stringify(vector) },
       });
+      const vectorStr = "[" + vector.join(",") + "]";
+      await prisma.$executeRaw(
+        Prisma.sql`UPDATE "Product" SET embedding_vector = ${vectorStr}::vector(1536) WHERE id = ${productId}`
+      );
     } catch (err) {
       console.warn(`[enrichment] Embedding failed for ${productId}:`, err.message);
     }

@@ -181,15 +181,19 @@ model MicroStore {
   lastChangedAt   DateTime?
   lastGeneratedAt DateTime?
   sections        String?
-  publishedAt     DateTime?
-  archivedAt      DateTime?
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  microstoreScore Float                @default(0)
-  brand           Brand?               @relation(fields: [brandId], references: [id], onDelete: Cascade)
-  followers       MicroStoreFollower[]
-  products        MicroStoreProduct[]
-  views           MicroStoreView[]
+  publishedAt       DateTime?
+  archivedAt        DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  microstoreScore   Float                @default(0)
+  visibilityScope   String?              @default("all")
+  visibilityUserId  String?
+  brand             Brand?               @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  followers         MicroStoreFollower[]
+  products          MicroStoreProduct[]
+  views             MicroStoreView[]
+  visibleTo         MicroStoreVisibleTo[]
 
   @@index([brandId])
   @@index([featured])
@@ -198,6 +202,9 @@ model MicroStore {
   @@index([createdBy])
   @@index([createdByUserId])
   @@index([lastChangedAt])
+  @@index([visibilityScope])
+  @@index([visibilityUserId])
+  @@index([deletedAt])
 }
 
 model ProductOverride {
@@ -252,7 +259,8 @@ model FeedPost {
 
 model User {
   id                     String                @id @default(cuid())
-  email                  String                @unique
+  email                  String?               @unique
+  username               String?               @unique
   passwordHash           String
   firstName              String?
   lastName               String?
@@ -280,6 +288,7 @@ model User {
   marketplaceSessions    MarketplaceSession[]
   microStoreFollowers    MicroStoreFollower[]
   microStoreViews        MicroStoreView[]
+  microStoreVisibleTo    MicroStoreVisibleTo[]
   orders                 Order[]
   outfits                Outfit[]
   outfitEvents           OutfitEvent[]
@@ -300,6 +309,7 @@ model User {
   agentMemories          AgentMemory[]
 
   @@index([email])
+  @@index([username])
   @@index([isActive])
   @@index([role])
 }
@@ -477,6 +487,36 @@ model MicroStoreView {
   @@index([userId])
 }
 
+model MicroStoreVisibleTo {
+  id           String     @id @default(cuid())
+  microStoreId String
+  userId       String
+  createdAt    DateTime   @default(now())
+  microStore   MicroStore @relation(fields: [microStoreId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([microStoreId, userId])
+  @@index([microStoreId])
+  @@index([userId])
+}
+
+model MicroStoreCreationContext {
+  id                 String   @id @default(cuid())
+  title              String
+  description        String?
+  vibe               String?
+  category           String?
+  trend              String?
+  referenceImageUrl  String?
+  order              Int      @default(0)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([order])
+}
+
 model Wishlist {
   id        String   @id @default(cuid())
   userId    String
@@ -582,6 +622,9 @@ model UserProfile {
   quizResponses              Json?
   quizSubmittedAt            DateTime?
   quizVersion                String?
+  // Style report (B4): latest report payload for rendering; regenerated from last 10-15 looks
+  latestStyleReportData       Json?
+  latestStyleReportGeneratedAt DateTime?
   updatedAt                  DateTime  @default(now())
   user                       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1057,6 +1100,14 @@ model ModelConfig {
   scope    String   @unique
   provider String
   model    String
+  updatedAt DateTime @updatedAt
+}
+
+// Style report agent: min/max number of looks to use (agent always uses latest looks in this range)
+model StyleReportSettings {
+  id        String   @id @default("default")
+  minLooks  Int      @default(1)
+  maxLooks  Int      @default(15)
   updatedAt DateTime @updatedAt
 }
 

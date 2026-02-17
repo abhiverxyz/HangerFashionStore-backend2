@@ -295,8 +295,35 @@ Frontend phases assume backend phases are available (or stubbed) so UI can call 
 | F2.1 | **Fashion diary** | Upload look (single + bulk); call Look analysis API; display looks with comment and categories (vibe, occasion, time); file/browse as diary. |
 | F2.2 | **Style report** | Upload user images; call Style report API; render report (report.json → styled view). |
 | F2.3 | **Wardrobe** | List wardrobe; “extract from look” flow: select look → call extraction API → show suggestions → accept/reject → update wardrobe. |
+| F2.4 | **Add look to wardrobe UI** | Full flow: look input → extract → show slots with suggestions → Accept / Replace / Resuggest per slot → add to wardrobe. See F2.4 subsection below. |
 
-**Depends on backend:** Phase 3 (looks, wardrobe); B4 (Look Analysis, Style Report, Wardrobe Extraction APIs).
+**Depends on backend:** Phase 3 (looks, wardrobe); B4 (Look Analysis, Style Report, Wardrobe Extraction APIs); for F2.4 also backend `POST /api/wardrobe/suggest-for-item` (resuggest one slot).
+
+---
+
+### F2.4 Add look to wardrobe UI (detailed)
+
+**Goal:** User sends a look to be added to the wardrobe; extraction runs; user sees suggested items per slot; user can **accept**, **replace**, or **resuggest** per slot; then add selected items to wardrobe. Do **not** implement until backend is ready; this is the implementation spec for the frontend.
+
+**Backend contract (required for F2.4):**
+
+- `POST /api/wardrobe/extract-from-look` — body: `{ lookId }` or `{ imageUrl }` or multipart `file`. Returns `{ slots: [{ itemIndex, item, suggestedProducts }], look?, error? }`.
+- `POST /api/wardrobe/accept-suggestions` — body: `{ productIds: string[] }` or `{ selections: [{ productId }] }`. Returns `{ created }`.
+- `POST /api/wardrobe/suggest-for-item` — body: `{ item: { description?, category_lvl1?, color_primary? }, limit? }`. Returns `{ suggestedProducts }` (for "resuggest" one slot without re-uploading the look).
+
+**UI flow:**
+
+1. **Look input** — User provides a look via: image URL, file upload, or look ID (e.g. from diary). Call `POST /api/wardrobe/extract-from-look`. On success, store `slots` and optional `look` in state.
+2. **Show extraction** — For each slot, show: detected item summary (type, description, category, color) and the list of suggested products (thumbnail, title, brand). Pre-select one product per slot (e.g. first) or leave unselected until user picks.
+3. **Per-slot actions:**
+   - **Accept** — Confirm current selection (or allow picking one of the suggested products) as the product to add for that slot.
+   - **Replace** — User picks a **different** product from the **current** list for that slot (no new API call; UI state only).
+   - **Resuggest** — Button "Get new suggestions" → call `POST /api/wardrobe/suggest-for-item` with that slot's `item`; replace that slot's `suggestedProducts` with the response; reset selection for that slot.
+4. **Add to wardrobe** — One button that collects the selected product ID for each slot (only slots where user picked a product), then call `POST /api/wardrobe/accept-suggestions` with that list. Show success and optionally list created items or refresh wardrobe list.
+
+**State (conceptual):** `extractionResult: { slots, look } | null`; per slot: `selectedProductId: string | null`, `suggestedProducts` (updated on resuggest). **Replace** = change `selectedProductId` to another id from `suggestedProducts`.
+
+**UX:** Loading states for extract and for resuggest (per slot). Error display for failed extract or accept. Optional: skip slot (don't add any product for that slot). Can live in Concierge Wardrobe tab or a dedicated "Add look to wardrobe" section. If the app uses a single backend base URL, add API proxy routes (e.g. `/api/wardrobe/extract-from-look`, `/api/wardrobe/accept-suggestions`, `/api/wardrobe/suggest-for-item`) that forward to backend2 with auth.
 
 ---
 

@@ -7,6 +7,7 @@
  */
 
 import { createHash } from "crypto";
+import { createReadStream } from "fs";
 import { writeFile, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { existsSync } from "fs";
@@ -51,6 +52,100 @@ async function getR2Client() {
   return r2Client;
 }
 
+/**
+ * Return current storage config (for admin diagnostics).
+ * @returns {Promise<{ r2Enabled: boolean, r2Available: boolean }>}
+ */
+export async function getStorageStatus() {
+  const client = await getR2Client();
+  return {
+    r2Enabled: R2_ENABLED,
+    r2Available: !!(R2_ENABLED && client),
+  };
+}
+
+/** Base URL used for R2 objects (API endpoint; not necessarily public-read). Used to detect R2 URLs in verify. */
+export function getR2PublicBaseUrl() {
+  return R2_PUBLIC_URL || null;
+}
+
+/**
+ * Check if an object exists in R2 and get its metadata (for verify without public read).
+ * @param {string} key - Object key
+ * @returns {Promise<{ exists: boolean, contentType?: string }>}
+ */
+export async function headR2Object(key) {
+  const client = await getR2Client();
+  if (!R2_ENABLED || !client || !key) return { exists: false };
+  try {
+    const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+    const out = await client.send(
+      new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key })
+    );
+    return {
+      exists: true,
+      contentType: out.ContentType || undefined,
+    };
+  } catch (e) {
+    return { exists: false };
+  }
+}
+
+/**
+ * Get object body from R2 (for admin proxy so preview works when bucket is not public).
+ * @param {string} key - Object key
+ * @returns {Promise<{ body: import('stream').Readable, contentType: string } | null>}
+ */
+export async function getR2Object(key) {
+  const client = await getR2Client();
+  if (!R2_ENABLED || !client || !key) return null;
+  try {
+    const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+    const out = await client.send(
+      new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key })
+    );
+    return {
+      body: out.Body,
+      contentType: out.ContentType || "application/octet-stream",
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+const EXT_TO_MIME = {
+  jpeg: "image/jpeg", jpg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif",
+  mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime",
+};
+
+/**
+ * Get object from local storage by key (for admin proxy).
+ * @param {string} key - Object key
+ * @returns {{ body: import('stream').Readable, contentType: string } | null}
+ */
+export function getLocalObject(key) {
+  if (!key) return null;
+  const localPath = join(STORAGE_PATH, key);
+  if (!existsSync(localPath)) return null;
+  const ext = key.split(".").pop()?.toLowerCase() || "";
+  const contentType = EXT_TO_MIME[ext] || "application/octet-stream";
+  return {
+    body: createReadStream(localPath),
+    contentType,
+  };
+}
+
+/**
+ * Get object from storage (R2 or local) by key. For admin proxy.
+ * @param {string} key - Object key
+ * @returns {Promise<{ body: import('stream').Readable, contentType: string } | null>}
+ */
+export async function getStorageObject(key) {
+  const r2 = await getR2Object(key);
+  if (r2) return r2;
+  return getLocalObject(key);
+}
+
 function normalizeExtension(filename, contentType) {
   if (contentType) {
     const mimeToExt = {
@@ -59,12 +154,19 @@ function normalizeExtension(filename, contentType) {
       "image/png": "png",
       "image/webp": "webp",
       "image/gif": "gif",
+      "video/mp4": "mp4",
+      "video/webm": "webm",
+      "video/quicktime": "mov",
+      "video/x-msvideo": "avi",
     };
     const n = mimeToExt[contentType.toLowerCase()];
     if (n) return `.${n}`;
   }
   const ext = filename.split(".").pop()?.toLowerCase() || "";
-  const extMap = { jpg: "jpeg", jpeg: "jpeg", png: "png", webp: "webp", gif: "gif" };
+  const extMap = {
+    jpg: "jpeg", jpeg: "jpeg", png: "png", webp: "webp", gif: "gif",
+    mp4: "mp4", webm: "webm", mov: "mov", avi: "avi",
+  };
   return extMap[ext] ? `.${extMap[ext]}` : ext ? `.${ext}` : "";
 }
 

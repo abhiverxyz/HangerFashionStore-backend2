@@ -82,3 +82,35 @@ export async function embed(text, options = {}) {
 export async function embedText(text, options = {}) {
   return embed(text, options);
 }
+
+const IMAGE_DESCRIPTION_PROMPT =
+  "Describe this image in one short sentence for fashion product search. Include: type of clothing or item, style, colors, and occasion if visible. Output only the description, no other text.";
+
+/**
+ * Embed an image for semantic search by describing it with vision then embedding the description.
+ * Returns the same vector shape as embedText (e.g. 1536-dim) so it can be used against text embeddings.
+ * @param {string} imageUrl - Public image URL or data URL
+ * @param {object} options - { provider?, model? } (for vision and embed steps)
+ * @returns {Promise<number[]>}
+ */
+export async function embedImage(imageUrl, options = {}) {
+  const url = typeof imageUrl === "string" && imageUrl.trim() ? imageUrl.trim() : null;
+  if (!url) throw new Error("imageUrl is required for embedImage");
+
+  const description = await complete(
+    [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: IMAGE_DESCRIPTION_PROMPT },
+          { type: "image_url", image_url: { url } },
+        ],
+      },
+    ],
+    { responseFormat: null, maxTokens: 150 }
+  );
+
+  const text = typeof description === "string" ? description.trim() : "";
+  if (!text) throw new Error("Could not get description from image for embedding");
+  return embed(text, options);
+}

@@ -4,6 +4,7 @@ import { asyncHandler } from "../core/asyncHandler.js";
 import { requireAuth, optionalAuth } from "../middleware/requireAuth.js";
 import * as lookDomain from "../domain/looks/look.js";
 import { run as runLookAnalysisAgent } from "../agents/lookAnalysisAgent.js";
+import { run as runStyleReportAgent } from "../agents/styleReportAgent.js";
 
 const router = Router();
 const IMAGE_MIMES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
@@ -47,6 +48,11 @@ router.post(
       contentType: file?.mimetype,
       lookId: lookId || undefined,
     });
+    if (req.userId) {
+      runStyleReportAgent({ userId: req.userId }).catch((err) =>
+        console.warn("[looks] style report trigger failed:", err?.message)
+      );
+    }
     res.status(200).json(result);
   })
 );

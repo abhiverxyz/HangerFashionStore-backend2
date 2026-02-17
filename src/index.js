@@ -31,11 +31,14 @@ app.use("/uploads", express.static(uploadsDir));
 
 app.use("/api", routes);
 
-// Catches errors from asyncHandler and any sync throws
+// Catches errors from asyncHandler and any sync throws. In production, 500s use a generic message.
 app.use((err, _req, res, _next) => {
   console.error("[error]", err);
   const status = err.status ?? err.statusCode ?? 500;
-  res.status(status).json({ error: err.message || "Internal server error" });
+  const isProduction = process.env.NODE_ENV === "production";
+  const message =
+    status >= 500 && isProduction ? "Internal server error" : err.message || "Internal server error";
+  res.status(status).json({ error: message });
 });
 
 app.listen(PORT, () => {

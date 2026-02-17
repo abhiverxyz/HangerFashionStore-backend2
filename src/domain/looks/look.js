@@ -20,6 +20,29 @@ export async function listLooks(opts = {}) {
   return { items, total };
 }
 
+/**
+ * List last N looks for a user with parsed lookData (for Style Report Agent).
+ * Each item has lookDataParsed: { comment, vibe, occasion, timeOfDay, labels, itemsSummary, analysisComment, suggestions, classificationTags }.
+ * @param {string} userId
+ * @param {number} [limit=15]
+ * @returns {Promise<{ items: Array<Look & { lookDataParsed: object }>, total: number }>}
+ */
+export async function listLooksForStyleReport(userId, limit = 15) {
+  const uid = normalizeId(userId);
+  if (!uid) return { items: [], total: 0 };
+  const { items, total } = await listLooks({ userId: uid, limit: Math.min(Number(limit) || 15, 20), offset: 0 });
+  const withParsed = items.map((look) => {
+    let lookDataParsed = {};
+    try {
+      lookDataParsed = typeof look.lookData === "string" ? JSON.parse(look.lookData) : look.lookData || {};
+    } catch {
+      lookDataParsed = {};
+    }
+    return { ...look, lookDataParsed };
+  });
+  return { items: withParsed, total };
+}
+
 export async function getLook(id) {
   const nid = normalizeId(id);
   if (!nid) return null;

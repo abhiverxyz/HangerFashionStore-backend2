@@ -201,3 +201,44 @@ export async function submitQuiz(userId, payload = {}) {
     },
   });
 }
+
+/**
+ * Save latest style report data (Style Report Agent). B4.
+ * @param {string} userId
+ * @param {Object} reportData - JSON-serializable report payload for rendering
+ */
+export async function saveLatestStyleReport(userId, reportData) {
+  const uid = normalizeId(userId);
+  if (!uid) throw new Error("userId required");
+  const prisma = getPrisma();
+  const row = await getOrCreateProfileRow(prisma, uid);
+  if (!row) throw new Error("User profile not found");
+  const now = new Date();
+  await prisma.userProfile.update({
+    where: { id: row.id },
+    data: {
+      latestStyleReportData: reportData ?? null,
+      latestStyleReportGeneratedAt: now,
+    },
+  });
+}
+
+/**
+ * Get latest style report for a user (for GET /api/style-report).
+ * @param {string} userId
+ * @returns {Promise<{ reportData: object | null, generatedAt: string | null } | null>}
+ */
+export async function getLatestStyleReport(userId) {
+  const uid = normalizeId(userId);
+  if (!uid) return null;
+  const prisma = getPrisma();
+  const row = await prisma.userProfile.findUnique({
+    where: { userId: uid },
+    select: { latestStyleReportData: true, latestStyleReportGeneratedAt: true },
+  });
+  if (!row) return null;
+  return {
+    reportData: row.latestStyleReportData ?? null,
+    generatedAt: row.latestStyleReportGeneratedAt?.toISOString?.() ?? null,
+  };
+}

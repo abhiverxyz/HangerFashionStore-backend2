@@ -5,24 +5,34 @@ import { validateLogin, getUser, createToken, verifyToken } from "../domain/user
 
 const router = Router();
 
-/** POST /api/auth/login - body: { email, password } */
+/** POST /api/auth/login - body: { username, password }. Username can be email (admin) or username (brand). */
 router.post(
   "/login",
   asyncHandler(async (req, res) => {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password required" });
+    const { username, password } = req.body || {};
+    const identifier = (username || req.body?.email || "").trim();
+    if (!identifier || !password) {
+      return res.status(400).json({ error: "Username and password required" });
     }
-    const user = await validateLogin(email, password);
+    const user = await validateLogin(identifier, password);
     if (!user) {
-      return res.status(401).json({ error: "Invalid email or password" });
+      return res.status(401).json({ error: "Invalid username or password" });
     }
     const token = createToken({
       userId: user.id,
       role: user.role,
       brandId: user.brandId,
     });
-    res.json({ token, user: { id: user.id, email: user.email, role: user.role, brandId: user.brandId } });
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+        brandId: user.brandId,
+      },
+    });
   })
 );
 

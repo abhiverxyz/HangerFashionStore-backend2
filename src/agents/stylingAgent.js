@@ -10,6 +10,7 @@
 import { complete } from "../utils/llm.js";
 import { analyzeImage } from "../utils/imageAnalysis.js";
 import { getUserProfile } from "../domain/userProfile/userProfile.js";
+import { buildUserContextFromProfile } from "../domain/userProfile/contextForAgents.js";
 import { listTrends, listStylingRules } from "../domain/fashionContent/fashionContent.js";
 import { composeLook } from "../domain/lookComposition/lookComposition.js";
 import { listProducts } from "../domain/product/product.js";
@@ -22,23 +23,6 @@ const HISTORY_MESSAGES_FOR_INTENT = 5;
 const OUTFIT_FEEDBACK_MAX_TOKENS = 300;
 
 const VALIDATE_OUTFIT_PROMPT = `Analyze this outfit image. Return a single JSON object with: "description" (short outfit description), "vibe" (string), "occasion" (string), "comment" (one short sentence: validation, encouragement, or one concrete suggestion), "hair" (string or null), "makeup" (string or null).`;
-
-/**
- * Build userContext for Look Composition from getUserProfile result.
- */
-function buildUserContextFromProfile(profile) {
-  if (!profile) return undefined;
-  const data = profile.styleProfile?.data;
-  const preferredVibe =
-    (data && typeof data === "object" && data.vibe) ||
-    (typeof data === "string" && data.trim()) ||
-    null;
-  const preferredOccasion = (data && typeof data === "object" && data.occasion) || null;
-  const out = {};
-  if (preferredVibe) out.preferredVibe = preferredVibe;
-  if (preferredOccasion) out.preferredOccasion = preferredOccasion;
-  return Object.keys(out).length ? out : undefined;
-}
 
 /**
  * Format last N messages from history for context (for intent extraction).

@@ -13,33 +13,40 @@ const JWT_SECRET = (() => {
 })();
 
 /**
- * Validate email/password; returns user with role and brandId (for brand users).
- * @returns {Promise<{ id, email, role, brandId? } | null>}
+ * Validate login by username (brand) or email (admin/user).
+ * @param {string} identifier - Username (brand) or email (admin/user)
+ * @param {string} password
+ * @returns {Promise<{ id, email?, username?, role, brandId? } | null>}
  */
-export async function validateLogin(email, password) {
+export async function validateLogin(identifier, password) {
   const prisma = getPrisma();
-  const emailNorm = (email || "").trim().toLowerCase();
-  if (!emailNorm) return null;
-  const user = await prisma.user.findUnique({
-    where: { email: emailNorm },
-    include: { brandAdmins: { select: { brandId: true } } },
-  });
+  const raw = (identifier || "").trim();
+  if (!raw || !password) return null;
+
+  let user;
+  if (raw.includes("@")) {
+    user = await prisma.user.findUnique({
+      where: { email: raw.toLowerCase() },
+      include: { brandAdmins: { select: { brandId: true } } },
+    });
+  } else {
+    user = await prisma.user.findFirst({
+      where: { username: raw },
+      include: { brandAdmins: { select: { brandId: true } } },
+    });
+  }
   if (!user || !user.passwordHash || !user.isActive) return null;
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return null;
 
   const role = (user.role || "user").toLowerCase();
   let brandId = null;
-  if (role === "brand" && user.brandAdmins?.length) {
-    brandId = user.brandAdmins[0].brandId;
-  }
-  if (role === "admin") {
-    // admin has no brandId
-  }
+  if (role === "brand" && user.brandAdmins?.length) brandId = user.brandAdmins[0].brandId;
 
   return {
     id: user.id,
-    email: user.email,
+    email: user.email ?? undefined,
+    username: user.username ?? undefined,
     role,
     brandId: brandId || undefined,
   };
@@ -62,7 +69,8 @@ export async function getUser(id) {
   if (role === "brand" && user.brandAdmins?.length) brandId = user.brandAdmins[0].brandId;
   return {
     id: user.id,
-    email: user.email,
+    email: user.email ?? undefined,
+    username: user.username ?? undefined,
     firstName: user.firstName,
     lastName: user.lastName,
     role,
