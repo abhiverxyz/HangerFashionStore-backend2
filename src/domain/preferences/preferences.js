@@ -1,6 +1,10 @@
 import { getPrisma } from "../../core/db.js";
 import { normalizeId } from "../../core/helpers.js";
 
+function triggerPreferenceGraph(userId) {
+  import("./preferenceGraph.js").then((m) => m.triggerBuildPreferenceGraph(userId)).catch(() => {});
+}
+
 const wishlistInclude = {
   product: {
     include: {
@@ -52,6 +56,7 @@ export async function addToWishlist(userId, productId, variantId = null) {
     data: { userId: uid, productId: pid, variantId: vid },
     include: wishlistInclude,
   });
+  triggerPreferenceGraph(uid);
   return created;
 }
 
@@ -68,6 +73,7 @@ export async function removeFromWishlist(userId, productId, variantId = null) {
   if (vid !== null) where.variantId = vid;
   else where.variantId = null;
   const result = await prisma.wishlist.deleteMany({ where });
+  if ((result?.count ?? 0) > 0) triggerPreferenceGraph(uid);
   return (result?.count ?? 0) > 0;
 }
 

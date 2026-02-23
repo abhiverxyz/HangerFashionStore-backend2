@@ -2,13 +2,23 @@
  * Admin: fashion content (sources, allowlist, run agent), styling (avatars, playbook), look classification tags.
  */
 import { Router } from "express";
+import multer from "multer";
 import { asyncHandler } from "../../core/asyncHandler.js";
 import * as fashionContent from "../../domain/fashionContent/fashionContent.js";
 import * as stylingAgentConfig from "../../domain/stylingAgentConfig/stylingAgentConfig.js";
 import * as lookClassificationTag from "../../domain/lookClassificationTag/lookClassificationTag.js";
 import { runFashionContentAgent } from "../../agents/fashionContentAgent.js";
+import { uploadFile } from "../../utils/storage.js";
 
 const router = Router();
+const avatarImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = file.mimetype && /^image\/(jpeg|jpg|png|webp|gif)$/i.test(file.mimetype);
+    cb(null, !!ok);
+  },
+});
 
 // ---------- Fashion Content ----------
 router.get(
@@ -106,17 +116,44 @@ router.put(
 router.put(
   "/styling-avatars/:idOrSlug",
   asyncHandler(async (req, res) => {
-    const { name, slug, description, systemPromptAddition, sortOrder, isDefault } = req.body || {};
+    const { name, slug, description, systemPromptAddition, defaultGreeting, goalsAddition, preferencesOverride, sortOrder, isDefault, imageUrl } = req.body || {};
     const avatar = await stylingAgentConfig.upsertAvatar({
       id: req.params.idOrSlug,
       name,
       slug: slug || req.params.idOrSlug,
       description,
       systemPromptAddition,
+      defaultGreeting: defaultGreeting !== undefined ? defaultGreeting : undefined,
+      goalsAddition: goalsAddition !== undefined ? goalsAddition : undefined,
+      preferencesOverride: preferencesOverride !== undefined ? preferencesOverride : undefined,
       sortOrder,
       isDefault,
+      imageUrl: imageUrl !== undefined ? imageUrl : undefined,
     });
     res.json(avatar);
+  })
+);
+
+/** POST /api/admin/styling-avatars/:idOrSlug/upload — upload image for avatar; updates avatar.imageUrl and returns avatar */
+router.post(
+  "/styling-avatars/:idOrSlug/upload",
+  avatarImageUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    const file = req.file;
+    if (!file || !file.buffer) {
+      return res.status(400).json({ error: "File required (image: jpeg, png, webp, gif)" });
+    }
+    const avatar = await stylingAgentConfig.getAvatarByIdOrSlug(req.params.idOrSlug);
+    if (!avatar) return res.status(404).json({ error: "Avatar not found" });
+    const ext = (file.mimetype || "image/jpeg").split("/")[1]?.replace("jpeg", "jpg") || "jpg";
+    const key = `styling-avatars/${avatar.id}.${ext}`;
+    const contentType = file.mimetype || "image/jpeg";
+    const { url } = await uploadFile(file.buffer, key, contentType, { requireRemote: false });
+    const updated = await stylingAgentConfig.upsertAvatar({
+      id: avatar.id,
+      imageUrl: url.startsWith("http") ? url : url,
+    });
+    res.json(updated);
   })
 );
 

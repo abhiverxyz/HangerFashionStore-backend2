@@ -9,6 +9,7 @@
 
 import { complete } from "../utils/llm.js";
 import { analyzeImage } from "../utils/imageAnalysis.js";
+import { resolveImageUrlForExternal } from "../utils/storage.js";
 import { getUserProfile } from "../domain/userProfile/userProfile.js";
 import { buildUserContextFromProfile } from "../domain/userProfile/contextForAgents.js";
 import { listTrends, listStylingRules } from "../domain/fashionContent/fashionContent.js";
@@ -120,7 +121,8 @@ export async function run(input, context) {
 
   let agentContextBlock = "";
   try {
-    agentContextBlock = await buildStylingAgentContext();
+    const avatarIdOrSlug = context?.avatarIdOrSlug ?? context?.avatarId ?? context?.avatarSlug;
+    agentContextBlock = await buildStylingAgentContext(avatarIdOrSlug);
   } catch (e) {
     console.warn("[stylingAgent] buildStylingAgentContext failed:", e?.message);
   }
@@ -136,27 +138,58 @@ export async function run(input, context) {
   const intentPrompt = `Extract styling intent from this message${imageUrlList.length > 0 ? " and the attached image(s)" : ""}. Use conversation history for refinement (e.g. "more casual", "different one").
 Reply with JSON only: {
   "intent": "suggest_look"|"suggest_items"|"trends"|"general"|"pairing"|"validate_outfit",
+  "isSmallTalk": boolean (true when the message is only greeting, thanks, or chitchat: "hi", "hello", "thanks", "thank you", "bye", "how are you", "hey" with no styling request),
+  "clarifyingQuestion": string or null (when intent is ambiguous, one engaging question to disambiguate; put the full question text in oneLineReply too),
+  "clarifyingChoices": array of 2-3 short option strings or null (e.g. ["Suggest a full look", "Find specific items", "Share trends"] when offering choices; include the question and options in oneLineReply),
   "vibe": string or null,
   "occasion": string or null,
   "category": string or null,
   "anchorProductId": string or null (if user asks to build look around a specific product),
   "searchQuery": string or null (natural language product search, e.g. "blue dress", "white sneakers"),
   "lookDisplayPreference": "on_model"|"flat_lay"|"auto"|null (on_model = show outfit on a person; flat_lay = items laid out; auto = pick from context),
-  "oneLineReply": one short friendly sentence to start the assistant reply
+  "oneLineReply": one short friendly sentence to start the assistant reply (for small talk: answer/acknowledge and gently nudge toward styling, e.g. "I'm [Name]. I'm here to help with looks and style—what would you like to do today?"; for clarifying: the engaging question or question + options)
 }
+Small talk: If the message is ONLY a greeting or chitchat (hi, hello, hey, what's your name, how are you, who are you) with no styling request, you MUST set isSmallTalk: true and set oneLineReply to a warm reply that answers/acknowledges and gently nudges toward styling. Do NOT set intent to suggest_look, suggest_items, or trends for pure greetings; intent should remain general and isSmallTalk true. Use the avatar's tone from context.
+Clarifying: When the user's intent is ambiguous (e.g. "something for the weekend", "help me look good", "I need something"), set clarifyingQuestion or clarifyingChoices and put the engaging question (and options if using choices) in oneLineReply. Do not set both clarifyingQuestion and clarifyingChoices.
 Use "pairing" when user wants matching/complementary items for something they have. Use "validate_outfit" when user is asking for feedback on their outfit (e.g. "how do I look?", "what do you think?"). When the user asks what to wear for an occasion (e.g. "what should I wear for office?", "outfit for dinner"), use intent: suggest_look, set occasion (and vibe if clear), and lookDisplayPreference: auto or on_model; do not use suggest_items for these discovery-style questions. For lookDisplayPreference: use "on_model" if user says "on a model", "worn look", "how it looks on someone"; use "flat_lay" if "flat lay", "show the pieces", "just the items"; otherwise "auto".${historyContext ? `\n\nRecent conversation:\n${historyContext}` : ""}\n\nCurrent user message: ${text}`;
 
   let lookDisplayPreference = null;
+  let resolved = {};
+  const resolvedImageUrls = imageUrlList.length > 0
+    ? await Promise.all(imageUrlList.map((u) => resolveImageUrlForExternal(u)))
+    : [];
   try {
     const content = [];
-    for (const url of imageUrlList) {
+    for (const url of resolvedImageUrls) {
       content.push({ type: "image_url", image_url: { url } });
     }
     content.push({ type: "text", text: intentPrompt });
-    const systemContent =
+    let systemContent =
       agentContextBlock.trim() !== ""
         ? `${agentContextBlock.trim()}\n\nYou are a fashion styling assistant. Output valid JSON only.`
         : "You are a fashion styling assistant. Output valid JSON only.";
+    if (userContext && typeof userContext === "object" && Object.keys(userContext).length > 0) {
+      const parts = [];
+      if (userContext.preferredVibe) parts.push(`preferred vibe: ${userContext.preferredVibe}`);
+      if (userContext.preferredOccasion) parts.push(`preferred occasion: ${userContext.preferredOccasion}`);
+      if (Array.isArray(userContext.preferredCategoryLvl1) && userContext.preferredCategoryLvl1.length) {
+        parts.push(`preferred categories: ${userContext.preferredCategoryLvl1.join(", ")}`);
+      }
+      if (userContext.fashionNeed) parts.push(`fashion need: ${userContext.fashionNeed}`);
+      if (userContext.fashionMotivation) parts.push(`motivation: ${userContext.fashionMotivation}`);
+      if (parts.length) {
+        systemContent += `\n\nUser's style profile: ${parts.join("; ")}. Use this to personalize oneLineReply and suggestions.`;
+      }
+    }
+    // D.3: embedded flow context (e.g. Concierge opened from Looks with prefill)
+    const entryContext = context?.entryContext;
+    if (entryContext && (entryContext.source || entryContext.prefillMessage)) {
+      const parts = [];
+      if (entryContext.source) parts.push(`opened from: ${entryContext.source}`);
+      if (entryContext.prefillMessage) parts.push(`prefill: "${entryContext.prefillMessage}"`);
+      if (entryContext.entryPoint) parts.push(`entryPoint: ${entryContext.entryPoint}`);
+      systemContent += `\n\nEntry context: ${parts.join("; ")}. Tailor the first reply to this (e.g. acknowledge the source or use the prefill as the user's implied request).`;
+    }
     const extracted = await complete(
       [
         { role: "system", content: systemContent },
@@ -164,7 +197,7 @@ Use "pairing" when user wants matching/complementary items for something they ha
       ],
       { responseFormat: "json_object", maxTokens: INTENT_EXTRACT_MAX_TOKENS }
     );
-    let resolved = extracted && typeof extracted === "object" ? extracted : {};
+    resolved = extracted && typeof extracted === "object" ? extracted : {};
     resolved = nudgeIntentForDiscovery(text, resolved);
     if (resolved && typeof resolved === "object") {
       intent = resolved.intent || intent;
@@ -180,12 +213,59 @@ Use "pairing" when user wants matching/complementary items for something they ha
     console.warn("[stylingAgent] intent extraction failed:", e?.message);
   }
 
+  const hasStylingSignal = !!(vibe || occasion || category || searchQuery || anchorProductId);
+
+  // Small talk: return warm reply that nudges toward styling; no cards (normalize boolean or string "true")
+  const isSmallTalk =
+    resolved?.isSmallTalk === true || String(resolved?.isSmallTalk).toLowerCase() === "true";
+  if (isSmallTalk && oneLineReply) {
+    return {
+      reply: oneLineReply.trim(),
+      flowType: "none",
+      flowContext: null,
+    };
+  }
+  if (isSmallTalk) {
+    return {
+      reply: "Hi! I'm here to help with looks and style—what would you like to do today?",
+      flowType: "none",
+      flowContext: null,
+    };
+  }
+
+  // Clarifying: intent unclear; return engaging question/choices as reply; no cards
+  const hasClarifying =
+    (resolved?.clarifyingQuestion && String(resolved.clarifyingQuestion).trim()) ||
+    (Array.isArray(resolved?.clarifyingChoices) && resolved.clarifyingChoices.length > 0);
+  if (hasClarifying && oneLineReply) {
+    return {
+      reply: oneLineReply.trim(),
+      flowType: "none",
+      flowContext: null,
+    };
+  }
+
+  // Fallback: very short greeting/thanks/goodbye with no styling params → treat as small talk (D.2)
+  const greetingPattern = /^(hi|hello|hey|how are you|what'?s your name|who are you|howdy|greetings)[.?!]?\s*$/i;
+  const thanksByePattern = /^(thanks?|thank you|thx|bye|goodbye|see you|later|have a good one)[.?!]?\s*$/i;
+  if (
+    !hasStylingSignal &&
+    text.length <= 50 &&
+    (greetingPattern.test(text.trim()) || thanksByePattern.test(text.trim()))
+  ) {
+    return {
+      reply: oneLineReply?.trim() || "Hi! I'm here to help with looks and style—what would you like to do today?",
+      flowType: "none",
+      flowContext: null,
+    };
+  }
+
   const resolvedImageStyle = resolveLookImageStyle(lookDisplayPreference, history);
 
   const cards = { looks: [], products: [], tips: [], makeupHair: [] };
 
   // validate_outfit: user sent outfit image(s), want feedback (use first image for analysis)
-  const firstImageUrl = imageUrlList.length > 0 ? imageUrlList[0] : null;
+  const firstImageUrl = resolvedImageUrls.length > 0 ? resolvedImageUrls[0] : null;
   if (intent === "validate_outfit" && firstImageUrl) {
     try {
       const analysis = await analyzeImage(firstImageUrl, {
@@ -267,7 +347,7 @@ Use "pairing" when user wants matching/complementary items for something they ha
 
   const runProducts =
     intent === "suggest_items" ||
-    (intent === "general" && !cards.looks.length) ||
+    (intent === "general" && (vibe || occasion || category || searchQuery) && !cards.looks.length) ||
     (intent === "pairing" && !cards.looks.length);
   if (runProducts) {
     try {
@@ -293,8 +373,10 @@ Use "pairing" when user wants matching/complementary items for something they ha
     }
   }
 
-  // Add tips when user asked for trends, or whenever we have trends/rules (so we return something even if look/products failed)
-  if (intent === "trends" || trends.length > 0 || rules.length > 0) {
+  // Add tips only when intent is trends or we have a clear styling signal (avoid cards on bare "general" / ambiguous)
+  const shouldAddTips =
+    intent === "trends" || (hasStylingSignal && (trends.length > 0 || rules.length > 0));
+  if (shouldAddTips) {
     cards.tips = [
       ...trends.slice(0, 2).map((t) => ({ type: "trend", title: t.trendName, description: t.description || null })),
       ...rules.slice(0, 2).map((r) => ({ type: "tip", title: r.title ?? r.body?.slice(0, 50), body: r.body || null })),
@@ -317,7 +399,22 @@ Use "pairing" when user wants matching/complementary items for something they ha
     }
   }
 
-  let reply = oneLineReply || "Here are some ideas for you.";
+  const hasCards =
+    cards.looks.length > 0 ||
+    cards.products.length > 0 ||
+    cards.tips.length > 0 ||
+    cards.makeupHair.length > 0;
+
+  // D.4: when user asked for suggestions but tools returned no cards, use helpful fallback
+  const askedForSuggestions =
+    intent === "suggest_look" ||
+    intent === "suggest_items" ||
+    intent === "trends" ||
+    (intent === "general" && (vibe || occasion || category || searchQuery));
+  const emptyFallback =
+    "I couldn't find specific looks for that right now. Try mentioning an occasion like \"dinner\" or a vibe like \"casual\"—or browse Find for ideas.";
+
+  let reply = oneLineReply || (hasCards ? "Here are some ideas for you." : askedForSuggestions ? emptyFallback : "Here are some ideas for you.");
   if (cards.looks.length) reply += " I put together a look that fits.";
   if (cards.products.length) reply += " Here are some items you might like.";
   if (cards.tips.length) reply += " I also included a few trends and tips.";
@@ -329,11 +426,6 @@ Use "pairing" when user wants matching/complementary items for something they ha
     reply = validateResult.suggestedFix.trim();
   }
 
-  const hasCards =
-    cards.looks.length > 0 ||
-    cards.products.length > 0 ||
-    cards.tips.length > 0 ||
-    cards.makeupHair.length > 0;
   return {
     reply,
     flowType: hasCards ? "styling_cards" : "none",

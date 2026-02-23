@@ -51,7 +51,7 @@ export async function getAvatarByIdOrSlug(idOrSlug) {
  */
 export async function upsertAvatar(data) {
   const prisma = getPrisma();
-  const { id, name, slug, description, systemPromptAddition, sortOrder, isDefault } = data;
+  const { id, name, slug, description, systemPromptAddition, defaultGreeting, goalsAddition, preferencesOverride, sortOrder, isDefault, imageUrl } = data;
   const idOrSlug = id || slug;
   const existing = idOrSlug ? await getAvatarByIdOrSlug(idOrSlug) : null;
   if (isDefault) {
@@ -62,8 +62,12 @@ export async function upsertAvatar(data) {
     slug: String(slug ?? existing?.slug ?? ""),
     description: description !== undefined ? (description == null ? null : String(description)) : existing?.description ?? null,
     systemPromptAddition: String(systemPromptAddition ?? existing?.systemPromptAddition ?? ""),
+    defaultGreeting: defaultGreeting !== undefined ? (defaultGreeting == null ? null : String(defaultGreeting)) : existing?.defaultGreeting ?? null,
+    goalsAddition: goalsAddition !== undefined ? (goalsAddition == null ? null : String(goalsAddition)) : existing?.goalsAddition ?? null,
+    preferencesOverride: preferencesOverride !== undefined ? (preferencesOverride == null ? null : String(preferencesOverride)) : existing?.preferencesOverride ?? null,
     sortOrder: Number(sortOrder ?? existing?.sortOrder ?? 0),
     isDefault: Boolean(isDefault ?? existing?.isDefault ?? false),
+    imageUrl: imageUrl !== undefined ? (imageUrl == null ? null : String(imageUrl)) : existing?.imageUrl ?? null,
   };
   if (existing) {
     return prisma.stylingAvatar.update({ where: { id: existing.id }, data: payload });
@@ -166,14 +170,17 @@ export async function deletePlaybookEntry(id) {
 }
 
 /**
- * Build the full context block for the Styling Agent: goals + default avatar tone + active playbook instructions/examples.
+ * Build the full context block for the Styling Agent: goals + avatar tone + active playbook instructions/examples.
+ * @param {string|null|undefined} [avatarIdOrSlug] - If provided, use this avatar's tone; otherwise use default avatar. Invalid id/slug falls back to default.
  */
-export async function buildStylingAgentContext() {
-  const [goals, avatar, playbookEntries] = await Promise.all([
+export async function buildStylingAgentContext(avatarIdOrSlug) {
+  const [goals, requestedAvatar, defaultAvatar, playbookEntries] = await Promise.all([
     getGoalsContent(),
+    avatarIdOrSlug ? getAvatarByIdOrSlug(avatarIdOrSlug) : Promise.resolve(null),
     getDefaultAvatar(),
     listPlaybook({ isActive: true }),
   ]);
+  const avatar = requestedAvatar ?? defaultAvatar;
 
   const instructionEntries = playbookEntries.filter(
     (e) => e.type === "instruction" || e.type === "example_flow"
@@ -181,8 +188,14 @@ export async function buildStylingAgentContext() {
 
   const parts = [];
   parts.push(goals);
+  if (avatar?.goalsAddition && String(avatar.goalsAddition).trim()) {
+    parts.push(`Goal prioritization for this avatar: ${avatar.goalsAddition.trim()}`);
+  }
   if (avatar?.systemPromptAddition) {
     parts.push(`Tone and style: ${avatar.systemPromptAddition}`);
+  }
+  if (avatar?.preferencesOverride && String(avatar.preferencesOverride).trim()) {
+    parts.push(`Avatar preferences: ${avatar.preferencesOverride.trim()}`);
   }
   if (instructionEntries.length > 0) {
     parts.push(

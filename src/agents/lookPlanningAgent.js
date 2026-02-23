@@ -154,13 +154,17 @@ Provide exactly ${numLooks} items. Keep labels short (under 40 chars). Vibe and 
       const slot = chunk[j];
       if (result.status === "fulfilled") {
         const composed = result.value;
+        const imageUrl = composed.imageUrl ?? null;
+        if (!imageUrl && Boolean(generateImages)) {
+          console.warn("[lookPlanningAgent] Look has no imageUrl (slot:", slot.label, "); image generation may have failed — check REPLICATE_API_TOKEN and [lookComposition] / [Generate] logs");
+        }
         looks.push({
           label: slot.label,
           vibe: composed.vibe ?? slot.vibe,
           occasion: composed.occasion ?? slot.occasion,
           products: composed.products ?? [],
           productIds: composed.productIds ?? [],
-          imageUrl: composed.imageUrl ?? null,
+          imageUrl,
           lookImageStyle: composed.lookImageStyle ?? imageStyleResolved,
         });
       } else {

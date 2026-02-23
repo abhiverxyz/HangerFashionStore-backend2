@@ -6,6 +6,84 @@ const RECENT_EVENTS_DAYS = 90;
 const RECENT_EVENTS_LIMIT = 200;
 
 /**
+ * Build overall and section summaries from a profile object (no DB, no LLM).
+ * @param {Object} profile - Result of getUserProfile (before summary is attached)
+ * @returns {{ overall: string, sections: { history: string, styleProfile: string, fashionNeed: string, fashionMotivation: string } }}
+ */
+function buildProfileSummaries(profile) {
+  if (!profile) {
+    return {
+      overall: "No profile data.",
+      sections: {
+        history: "No history.",
+        styleProfile: "No style profile yet.",
+        fashionNeed: "Not yet generated.",
+        fashionMotivation: "Not yet generated.",
+      },
+    };
+  }
+
+  let historySummary = "No recent activity.";
+  const storedHistory = profile.history?.summary;
+  if (storedHistory != null && typeof storedHistory === "string" && storedHistory.trim()) {
+    historySummary = storedHistory.trim();
+  } else if (Array.isArray(profile.history?.recentEvents) && profile.history.recentEvents.length > 0) {
+    const events = profile.history.recentEvents;
+    const byType = {};
+    for (const e of events) {
+      const t = e?.eventType ?? "unknown";
+      byType[t] = (byType[t] || 0) + 1;
+    }
+    const parts = Object.entries(byType).map(([t, n]) => `${n} ${t}`);
+    historySummary = `${events.length} events in last 90 days: ${parts.join(", ")}.`;
+  }
+
+  let styleProfileSummary = "No style profile yet.";
+  const styleData = profile.styleProfile?.data;
+  if (styleData != null && typeof styleData === "object") {
+    const parts = [];
+    if (Array.isArray(styleData.styleKeywords) && styleData.styleKeywords.length > 0) {
+      parts.push(styleData.styleKeywords.slice(0, 8).join(", "));
+    }
+    if (styleData.formalityRange && String(styleData.formalityRange).trim()) {
+      parts.push(`Formality: ${String(styleData.formalityRange).trim()}`);
+    }
+    if (styleData.oneLiner && String(styleData.oneLiner).trim()) {
+      parts.push(String(styleData.oneLiner).trim());
+    }
+    const comp = styleData.comprehensive;
+    if (comp?.synthesis?.style_descriptor_short && String(comp.synthesis.style_descriptor_short).trim()) {
+      parts.push(String(comp.synthesis.style_descriptor_short).trim());
+    }
+    if (parts.length > 0) styleProfileSummary = parts.join(". ");
+  } else if (styleData != null && typeof styleData === "string" && styleData.trim()) {
+    styleProfileSummary = styleData.trim().slice(0, 300);
+  }
+
+  const fashionNeedSummary =
+    (profile.fashionNeed?.text && String(profile.fashionNeed.text).trim()) || "Not yet generated.";
+  const fashionMotivationSummary =
+    (profile.fashionMotivation?.text && String(profile.fashionMotivation.text).trim()) || "Not yet generated.";
+
+  const overall = [
+    `Style: ${styleProfileSummary}`,
+    `Recent activity: ${historySummary}`,
+    `Current focus: ${fashionNeedSummary}`,
+    `Motivation: ${fashionMotivationSummary}`,
+  ].join(" ");
+
+  return {
+    overall,
+    sections: {
+      history: historySummary,
+      styleProfile: styleProfileSummary,
+      fashionNeed: fashionNeedSummary,
+      fashionMotivation: fashionMotivationSummary,
+    },
+  };
+}
+
+/**
  * Get or create UserProfile row for a user. Does not create User.
  */
 async function getOrCreateProfileRow(prisma, userId) {
@@ -46,7 +124,7 @@ export async function getUserProfile(userId, opts = {}) {
   ]);
 
   if (!row) {
-    return {
+    const defaultProfile = {
       userId: uid,
       styleProfile: { updatedAt: null, source: null, data: null },
       history: { summary: null, recentEvents: [] },
@@ -54,11 +132,13 @@ export async function getUserProfile(userId, opts = {}) {
       fashionMotivation: { text: null, updatedAt: null },
       quiz: { responses: null, submittedAt: null, version: null },
     };
+    return { ...defaultProfile, summary: buildProfileSummaries(defaultProfile) };
   }
 
-  // Backward compat: use profileJson as style data when styleProfileData not set
+  // Backward compat: use profileJson as style data when styleProfileData not set.
+  // styleProfileData = from Style Report Agent (user images). profileJson = legacy from old backend (wishlist/cart/wardrobe/signals).
   const styleData = row.styleProfileData ?? row.profileJson ?? null;
-  return {
+  const profile = {
     userId: row.userId,
     styleProfile: {
       updatedAt: row.styleProfileUpdatedAt?.toISOString() ?? null,
@@ -90,6 +170,7 @@ export async function getUserProfile(userId, opts = {}) {
       version: row.quizVersion ?? null,
     },
   };
+  return { ...profile, summary: buildProfileSummaries(profile) };
 }
 
 /**
@@ -240,5 +321,46 @@ export async function getLatestStyleReport(userId) {
   return {
     reportData: row.latestStyleReportData ?? null,
     generatedAt: row.latestStyleReportGeneratedAt?.toISOString?.() ?? null,
+  };
+}
+
+/**
+ * Set preference graph (C+ Phase 2). Used by preferenceGraph.buildPreferenceGraph.
+ * @param {string} userId
+ * @param {Object} graph - JSON-serializable graph object
+ */
+export async function setPreferenceGraph(userId, graph) {
+  const uid = normalizeId(userId);
+  if (!uid) throw new Error("userId required");
+  const prisma = getPrisma();
+  const row = await getOrCreateProfileRow(prisma, uid);
+  if (!row) throw new Error("User profile not found");
+  const now = new Date();
+  await prisma.userProfile.update({
+    where: { id: row.id },
+    data: {
+      preferenceGraphJson: graph ?? null,
+      preferenceGraphUpdatedAt: now,
+    },
+  });
+}
+
+/**
+ * Get stored preference graph for a user (C+ Phase 2).
+ * @param {string} userId
+ * @returns {Promise<{ graph: object | null, updatedAt: string | null } | null>}
+ */
+export async function getPreferenceGraphStored(userId) {
+  const uid = normalizeId(userId);
+  if (!uid) return null;
+  const prisma = getPrisma();
+  const row = await prisma.userProfile.findUnique({
+    where: { userId: uid },
+    select: { preferenceGraphJson: true, preferenceGraphUpdatedAt: true },
+  });
+  if (!row) return null;
+  return {
+    graph: row.preferenceGraphJson ?? null,
+    updatedAt: row.preferenceGraphUpdatedAt?.toISOString?.() ?? null,
   };
 }

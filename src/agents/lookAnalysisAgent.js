@@ -6,7 +6,7 @@
  */
 
 import { analyzeImage } from "../utils/imageAnalysis.js";
-import { uploadFile } from "../utils/storage.js";
+import { uploadFile, resolveImageUrlForExternal } from "../utils/storage.js";
 import { complete } from "../utils/llm.js";
 import { randomUUID } from "crypto";
 import * as lookDomain from "../domain/looks/look.js";
@@ -53,7 +53,8 @@ export async function run(input) {
     throw new Error("Provide imageUrl, imageBuffer, or lookId with an image");
   }
 
-  const analysis = await analyzeImage(resolvedImageUrl, {
+  const urlForVision = await resolveImageUrlForExternal(resolvedImageUrl);
+  const analysis = await analyzeImage(urlForVision, {
     responseFormat: "json_object",
     maxTokens: LOOK_ANALYSIS_MAX_TOKENS,
   });

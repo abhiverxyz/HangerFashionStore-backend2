@@ -1,13 +1,19 @@
 import { Prisma } from "@prisma/client";
 import { getPrisma } from "../../core/db.js";
 import { normalizeId } from "../../core/helpers.js";
-import { embedText, embedImage } from "../../utils/llm.js";
+import { embedText, embedImage, embedImageWithQuery } from "../../utils/llm.js";
 
 /** Max products to load for semantic similarity when pgvector is not used. */
 const SEMANTIC_SEARCH_CANDIDATE_LIMIT = 2000;
 
 /** OpenAI text-embedding-3-small dimension; must match DB vector(1536). */
 const EMBEDDING_DIM = 1536;
+
+/** Cosine distance threshold: only return products with distance < this (pgvector <=>; 0–2 range, lower = more similar). */
+const RELEVANCE_DISTANCE_THRESHOLD = Number(process.env.RELEVANCE_DISTANCE_THRESHOLD) || 0.55;
+
+/** Min similarity (dot product, ~cosine) for in-memory path; only return products above this. */
+const RELEVANCE_MIN_SIMILARITY = Number(process.env.RELEVANCE_MIN_SIMILARITY) || 0.25;
 
 /**
  * Get a single product by id (with brand and images).
@@ -61,6 +67,7 @@ export async function listProducts(opts = {}) {
       include: {
         brand: { select: { id: true, name: true, logoUrl: true } },
         images: { take: 1, orderBy: { position: "asc" } },
+        variants: { select: { price: true }, take: 1, orderBy: { id: "asc" } },
       },
       orderBy: { updatedAt: "desc" },
       take: Math.min(Number(limit) || 24, 100),
@@ -85,7 +92,7 @@ function dot(a, b) {
 /**
  * Natural language or image-based semantic search over products.
  * Uses pgvector when available (full catalog, fast); otherwise in-memory similarity over products with embedding.
- * @param {Object} opts - { query?: string, imageUrl?: string, limit?, offset?, brandId?, status?, category_lvl1? }
+ * @param {Object} opts - { query?, imageUrl?, limit?, offset?, brandId?, status?, category_lvl1?, occasion_primary?, mood_vibe? }
  * @returns {Promise<{ items: Object[], total: number }>}
  */
 export async function searchProducts(opts = {}) {
@@ -97,6 +104,8 @@ export async function searchProducts(opts = {}) {
     brandId,
     status = "active",
     category_lvl1,
+    occasion_primary,
+    mood_vibe,
   } = opts;
 
   const queryTrimmed = query != null ? String(query).trim() : "";
@@ -110,11 +119,15 @@ export async function searchProducts(opts = {}) {
       brandId,
       status,
       category_lvl1,
+      occasion_primary,
+      mood_vibe,
     });
   }
 
   let queryVector;
-  if (imageUrlTrimmed) {
+  if (imageUrlTrimmed && queryTrimmed) {
+    queryVector = await embedImageWithQuery(imageUrlTrimmed, queryTrimmed);
+  } else if (imageUrlTrimmed) {
     queryVector = await embedImage(imageUrlTrimmed);
   } else {
     queryVector = await embedText(queryTrimmed.slice(0, 8000));
@@ -126,23 +139,34 @@ export async function searchProducts(opts = {}) {
   const nidBrand = normalizeId(brandId);
   const cat =
     category_lvl1 != null && String(category_lvl1).trim() ? String(category_lvl1).trim() : null;
+  const occ =
+    occasion_primary != null && String(occasion_primary).trim() ? String(occasion_primary).trim() : null;
+  const mood =
+    mood_vibe != null && String(mood_vibe).trim() ? String(mood_vibe).trim() : null;
 
   const vectorStr = "[" + queryVector.join(",") + "]";
 
   try {
+    const distanceCondition = Prisma.raw(
+      `(embedding_vector <=> '${vectorStr}'::vector(1536)) < ${RELEVANCE_DISTANCE_THRESHOLD}`
+    );
+    const orderByDistance = Prisma.raw(`embedding_vector <=> '${vectorStr}'::vector(1536)`);
     const conditions = [
       Prisma.sql`status = ${status || "active"}`,
       Prisma.sql`embedding_vector IS NOT NULL`,
+      distanceCondition,
     ];
     if (nidBrand) conditions.push(Prisma.sql`"brandId" = ${nidBrand}`);
     if (cat) conditions.push(Prisma.sql`"category_lvl1" = ${cat}`);
+    if (occ) conditions.push(Prisma.sql`"occasion_primary" = ${occ}`);
+    if (mood) conditions.push(Prisma.sql`"mood_vibe" = ${mood}`);
 
     const [ids, countResult] = await Promise.all([
       prisma.$queryRaw(
         Prisma.sql`
         SELECT id FROM "Product"
         WHERE ${Prisma.join(conditions, " AND ")}
-        ORDER BY embedding_vector <=> ${vectorStr}::vector(1536)
+        ORDER BY ${orderByDistance}
         LIMIT ${limitNum} OFFSET ${offsetNum}
         `
       ),
@@ -164,6 +188,7 @@ export async function searchProducts(opts = {}) {
       include: {
         brand: { select: { id: true, name: true, logoUrl: true } },
         images: { take: 1, orderBy: { position: "asc" } },
+        variants: { select: { price: true }, take: 1, orderBy: { id: "asc" } },
       },
     });
     const byId = new Map(products.map((p) => [p.id, p]));
@@ -186,12 +211,15 @@ export async function searchProducts(opts = {}) {
   };
   if (nidBrand) where.brandId = nidBrand;
   if (cat) where.category_lvl1 = cat;
+  if (occ) where.occasion_primary = occ;
+  if (mood) where.mood_vibe = mood;
 
   const candidates = await prisma.product.findMany({
     where,
     include: {
       brand: { select: { id: true, name: true, logoUrl: true } },
       images: { take: 1, orderBy: { position: "asc" } },
+      variants: { select: { price: true }, take: 1, orderBy: { id: "asc" } },
     },
     take: SEMANTIC_SEARCH_CANDIDATE_LIMIT,
   });
@@ -205,7 +233,8 @@ export async function searchProducts(opts = {}) {
       continue;
     }
     if (!Array.isArray(vec) || vec.length !== queryVector.length) continue;
-    scored.push({ product: p, score: dot(queryVector, vec) });
+    const score = dot(queryVector, vec);
+    if (score >= RELEVANCE_MIN_SIMILARITY) scored.push({ product: p, score });
   }
   scored.sort((a, b) => b.score - a.score);
   const total = scored.length;

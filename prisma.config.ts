@@ -16,6 +16,10 @@ if (!databaseUrl) {
 }
 
 export default {
+  schema: resolve(__dirname, "prisma", "schema.prisma"),
+  migrations: {
+    path: resolve(__dirname, "prisma", "migrations"),
+  },
   datasource: {
     url: databaseUrl,
   },

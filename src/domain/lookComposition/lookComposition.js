@@ -95,12 +95,27 @@ export async function composeLook(opts = {}) {
   }
 
   let imageUrl;
-  if (doGenerateImage && products.length > 0) {
-    imageUrl = await generateAndValidateLookImage(
-      { vibe: resolvedVibe, occasion: resolvedOccasion, products },
-      IMAGE_VALIDATE_MAX_RETRIES,
-      resolvedImageStyle
-    );
+  if (doGenerateImage) {
+    console.log("[lookComposition] Generating image for look:", {
+      vibe: resolvedVibe,
+      occasion: resolvedOccasion,
+      style: resolvedImageStyle,
+      productCount: products.length,
+    });
+    try {
+      imageUrl = await generateAndValidateLookImage(
+        { vibe: resolvedVibe, occasion: resolvedOccasion, products },
+        IMAGE_VALIDATE_MAX_RETRIES,
+        resolvedImageStyle
+      );
+      if (imageUrl) {
+        console.log("[lookComposition] Look image generated OK");
+      } else {
+        console.warn("[lookComposition] Look image generation returned no URL (check REPLICATE_API_TOKEN and logs above)");
+      }
+    } catch (err) {
+      console.warn("[lookComposition] generateAndValidateLookImage failed:", err?.message);
+    }
   }
 
   return {
@@ -180,7 +195,10 @@ async function generateAndValidateLookImage(lookContext, maxRetries, imageStyle 
     try {
       const result = await generateImage(prompt, { aspectRatio: "3:4" });
       const imageUrl = result?.imageUrl ?? null;
-      if (!imageUrl) continue;
+      if (!imageUrl) {
+        console.warn("[lookComposition] generateImage returned no imageUrl (attempt", attempt + 1, ")");
+        continue;
+      }
       lastUrl = imageUrl;
       const validation = await analyzeImage(imageUrl, {
         prompt: validationPrompt,
@@ -191,10 +209,14 @@ async function generateAndValidateLookImage(lookContext, maxRetries, imageStyle 
       const qualityOk = validation?.qualityOk === true;
       if (coherent && qualityOk) return imageUrl;
       lastReason = validation?.reason || "Image not coherent or quality insufficient.";
+      console.warn("[lookComposition] Validation failed (attempt", attempt + 1, "):", lastReason);
     } catch (err) {
-      console.warn("[lookComposition] generateImage or validate failed:", err?.message);
+      console.warn("[lookComposition] generateImage or validate failed (attempt", attempt + 1, "):", err?.message);
       if (attempt === maxRetries) return lastUrl;
     }
+  }
+  if (lastUrl) {
+    console.log("[lookComposition] Using last generated image (validation did not pass)");
   }
   return lastUrl;
 }

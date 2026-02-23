@@ -6,6 +6,7 @@
 
 import { complete } from "../utils/llm.js";
 import { searchProducts } from "../domain/product/product.js";
+import { resolveImageUrlForExternal } from "../utils/storage.js";
 
 const SEARCH_LIMIT = 12;
 const SUMMARY_MAX_TOKENS = 150;
@@ -115,10 +116,12 @@ export async function run(input, context) {
     };
   }
 
+  const resolvedImageUrl = imageUrl ? await resolveImageUrlForExternal(imageUrl) : undefined;
+
   try {
     const { items, total } = await searchProducts({
       query: query || undefined,
-      imageUrl: imageUrl || undefined,
+      imageUrl: resolvedImageUrl,
       limit: SEARCH_LIMIT,
       offset: 0,
       status: "active",

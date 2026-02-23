@@ -9,6 +9,7 @@ import {
   isFollowingBrand,
 } from "../domain/brand/brand.js";
 import { scoreAndOrderBrands } from "../domain/personalization/personalization.js";
+import { triggerBuildPreferenceGraph } from "../domain/preferences/preferenceGraph.js";
 
 const router = Router();
 
@@ -65,6 +66,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const brand = await followBrand(req.params.id, req.userId);
     if (!brand) return res.status(404).json({ error: "Brand not found" });
+    triggerBuildPreferenceGraph(req.userId);
     res.json({
       followed: true,
       brand: { id: brand.id, followerCount: brand._count?.followers ?? 0 },
@@ -79,6 +81,7 @@ router.delete(
   asyncHandler(async (req, res) => {
     const brand = await unfollowBrand(req.params.id, req.userId);
     if (!brand) return res.status(404).json({ error: "Brand not found" });
+    triggerBuildPreferenceGraph(req.userId);
     res.json({
       followed: false,
       brand: { id: brand.id, followerCount: brand._count?.followers ?? 0 },

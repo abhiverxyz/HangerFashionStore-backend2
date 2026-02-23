@@ -23,6 +23,8 @@ import feedPosts from "./feedPosts.js";
 import user from "./user.js";
 import lookPlanning from "./lookPlanning.js";
 import landing from "./landing.js";
+import stylingAvatars from "./stylingAvatars.js";
+import storageAccess from "./storageAccess.js";
 
 const router = Router();
 router.use("/products", products);
@@ -37,6 +39,8 @@ router.use("/generate", generate);
 router.use("/profile", profile);
 router.use("/fashion-content", fashionContent);
 router.use("/conversations", conversations);
+router.use("/styling-avatars", stylingAvatars);
+router.use("/storage", storageAccess);
 router.use("/cron", cron);
 router.use("/microstores", microstores);
 router.use("/brands", brands);

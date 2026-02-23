@@ -70,6 +70,67 @@ export function getR2PublicBaseUrl() {
 }
 
 /**
+ * Extract storage key from a stored URL (our R2 or /uploads/).
+ * @param {string} url - Stored imageUrl (R2 full URL or /uploads/key)
+ * @returns {string|null} - Storage key or null if not our storage
+ */
+export function urlToStorageKey(url) {
+  if (!url || typeof url !== "string") return null;
+  const u = url.trim();
+  if (!u) return null;
+  if (R2_PUBLIC_URL) {
+    const base = R2_PUBLIC_URL.replace(/\/$/, "");
+    if (u === base || u.startsWith(base + "/")) {
+      return u.slice(base.length).replace(/^\//, "") || null;
+    }
+  }
+  if (u.startsWith("/uploads/")) {
+    return u.slice("/uploads/".length) || null;
+  }
+  return null;
+}
+
+/**
+ * Get a short-lived presigned GET URL for R2 (for browser or external services).
+ * For local storage returns null; caller should use /uploads/key.
+ * @param {string} key - Storage key
+ * @param {number} [expiresIn=3600] - Seconds until expiry (default 1 hour)
+ * @returns {Promise<string|null>} - Presigned URL or null if local/R2 unavailable
+ */
+export async function getPresignedGetUrl(key, expiresIn = 3600) {
+  if (!key || typeof key !== "string") return null;
+  const client = await getR2Client();
+  if (!R2_ENABLED || !client) return null;
+  try {
+    const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+    const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+    const signed = await getSignedUrl(client, new GetObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: key,
+    }), { expiresIn });
+    return signed;
+  } catch (e) {
+    console.warn("[Storage] getPresignedGetUrl failed:", e?.message);
+    return null;
+  }
+}
+
+/**
+ * Resolve an image URL for use by external services (e.g. OpenAI vision).
+ * If the URL is our storage (R2 or /uploads), returns a presigned URL (R2) or same URL (local).
+ * @param {string} imageUrl - Stored or external URL
+ * @returns {Promise<string>} - URL that can be fetched by external services
+ */
+export async function resolveImageUrlForExternal(imageUrl) {
+  if (!imageUrl || typeof imageUrl !== "string") return imageUrl || "";
+  const key = urlToStorageKey(imageUrl);
+  if (!key) return imageUrl;
+  const presigned = await getPresignedGetUrl(key);
+  if (presigned) return presigned;
+  return imageUrl;
+}
+
+/**
  * Check if an object exists in R2 and get its metadata (for verify without public read).
  * @param {string} key - Object key
  * @returns {Promise<{ exists: boolean, contentType?: string }>}

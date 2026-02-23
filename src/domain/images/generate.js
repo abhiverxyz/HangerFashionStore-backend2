@@ -15,7 +15,10 @@ let replicateClient = null;
 async function getReplicateClient() {
   if (!replicateClient) {
     const token = process.env.REPLICATE_API_TOKEN;
-    if (!token) throw new Error("REPLICATE_API_TOKEN is required for image generation");
+    if (!token) {
+      console.error("[Generate] REPLICATE_API_TOKEN is not set — add it to backend .env for image generation");
+      throw new Error("REPLICATE_API_TOKEN is required for image generation");
+    }
     const Replicate = (await import("replicate")).default;
     replicateClient = new Replicate({ auth: token });
   }
@@ -39,38 +42,74 @@ export async function generateAndStoreImage(prompt, options = {}) {
     provider: options.provider,
     model: options.model,
   });
-  if (!config) throw new Error("No model config for scope imageGeneration");
+  if (!config) {
+    console.error("[Generate] No model config for imageGeneration — check config or env IMAGE_GENERATION_PROVIDER / IMAGE_GENERATION_MODEL");
+    throw new Error("No model config for scope imageGeneration");
+  }
   if (config.provider !== "flux") {
     throw new Error(`Image generation only supports provider=flux; got ${config.provider}`);
   }
 
   const replicate = await getReplicateClient();
-  console.log("[Generate] Flux generating:", prompt.substring(0, 80) + "...");
+  console.log("[Generate] Flux generating (model:", config.model, "):", prompt.substring(0, 80) + "...");
 
-  const output = await replicate.run(config.model, {
-    input: {
-      prompt: trimmed,
-      go_fast: true,
-      megapixels: "1",
-      num_outputs: 1,
-      aspect_ratio: options.aspectRatio || "3:4",
-      output_format: "webp",
-      output_quality: 80,
-    },
-  });
+  let output;
+  try {
+    output = await replicate.run(config.model, {
+      input: {
+        prompt: trimmed,
+        go_fast: true,
+        megapixels: "1",
+        num_outputs: 1,
+        aspect_ratio: options.aspectRatio || "3:4",
+        output_format: "webp",
+        output_quality: 80,
+      },
+    });
+  } catch (err) {
+    console.error("[Generate] Replicate run failed:", err?.message);
+    throw err;
+  }
 
-  const rawImageUrl = Array.isArray(output) ? output[0] : output;
+  const first = Array.isArray(output) ? output[0] : output;
+  let rawImageUrl = null;
+  if (typeof first === "string") {
+    rawImageUrl = first;
+  } else if (first != null && typeof first === "object") {
+    if (typeof first.url === "function") {
+      rawImageUrl = first.url().toString();
+    } else if (typeof first.toString === "function") {
+      rawImageUrl = first.toString();
+    } else if (first.url != null) {
+      rawImageUrl = String(first.url);
+    } else if (first.href != null) {
+      rawImageUrl = String(first.href);
+    }
+  }
   if (!rawImageUrl || typeof rawImageUrl !== "string") {
+    console.error("[Generate] Flux returned no image URL. Output:", typeof output, Array.isArray(output) ? output?.length : "", first != null ? typeof first : "");
     throw new Error("No image URL from Flux");
   }
 
-  const response = await axios.get(rawImageUrl, {
-    responseType: "arraybuffer",
-    timeout: 30_000,
-  });
-  const buffer = Buffer.from(response.data);
-  const key = `generated/${randomUUID()}.webp`;
-  const { url, key: storedKey } = await uploadFile(buffer, key, "image/webp", { requireRemote: true });
+  let buffer;
+  try {
+    const response = await axios.get(rawImageUrl, {
+      responseType: "arraybuffer",
+      timeout: 30_000,
+    });
+    buffer = Buffer.from(response.data);
+  } catch (err) {
+    console.error("[Generate] Failed to fetch image from Replicate URL:", err?.message);
+    throw err;
+  }
 
-  return { imageUrl: url, key: storedKey };
+  const key = `generated/${randomUUID()}.webp`;
+  try {
+    const { url, key: storedKey } = await uploadFile(buffer, key, "image/webp", { requireRemote: true });
+    console.log("[Generate] Image uploaded to storage OK");
+    return { imageUrl: url, key: storedKey };
+  } catch (err) {
+    console.error("[Generate] Upload to R2 failed:", err?.message);
+    throw err;
+  }
 }

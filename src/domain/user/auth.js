@@ -86,6 +86,27 @@ export function createToken(payload) {
 }
 
 /**
+ * Create short-lived JWT for storage access (img src cross-origin).
+ * 5 min expiry; only encodes userId.
+ */
+export function createStorageAccessToken(userId) {
+  return jwt.sign({ userId, purpose: "storage" }, JWT_SECRET, { expiresIn: "5m" });
+}
+
+/**
+ * Verify storage access token; returns payload with userId or null.
+ */
+export function verifyStorageAccessToken(token) {
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload?.purpose !== "storage" || !payload?.userId) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Verify JWT and return payload or null.
  */
 export function verifyToken(token) {

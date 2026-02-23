@@ -6,10 +6,13 @@
  * - B4: look_analyze (diary), style_report, wardrobe extraction
  * - B3: search
  * - B2: styling (default)
+ *
+ * Hybrid classification: regex/rules first; when no rule matches, LLM classifies (fallback to styling on error).
  */
 
 import { run as runStylingAgent } from "./stylingAgent.js";
 import { run as runSearchAgent } from "./searchAgent.js";
+import { complete } from "../utils/llm.js";
 
 /** Phrases that strongly indicate search intent (find items, not styling advice). */
 const SEARCH_PATTERNS = [
@@ -71,58 +74,130 @@ const LOOK_PLANNING_PATTERNS = [
   /\b(?:diverse|multiple)\s+looks?\s+for\s+/i,
 ];
 
+const VALID_INTENTS = [
+  "match_wishlist",
+  "look_planning",
+  "look_analyze",
+  "style_report",
+  "wardrobe",
+  "search",
+  "styling",
+];
+
 /**
- * Classify turn intent: B7.5 (match_wishlist), B5.5 (look_planning), B4 (look_analyze, style_report, wardrobe), search, or styling.
+ * Rule-based intent classification. Returns { intent, fromRules: true } when a pattern matches,
+ * or { intent: "styling", fromRules: false } when no rule matched (caller may use LLM fallback).
  * @param {{ message: string, imageUrls?: string[] }} input
- * @returns {"match_wishlist" | "look_planning" | "look_analyze" | "style_report" | "wardrobe" | "search" | "styling"}
+ * @returns {{ intent: string, fromRules: boolean }}
  */
-export function classifyIntent(input) {
+export function classifyIntentByRules(input) {
   const { message, imageUrls } = input;
   const text = (message || "").trim();
   const hasImage = Array.isArray(imageUrls) ? imageUrls.length > 0 : false;
 
   // B7.5: Match wishlist (message-only)
   for (const re of MATCH_WISHLIST_PATTERNS) {
-    if (re.test(text)) return "match_wishlist";
+    if (re.test(text)) return { intent: "match_wishlist", fromRules: true };
   }
 
   // B5.5: Look planning / occasion (message-only)
   for (const re of LOOK_PLANNING_PATTERNS) {
-    if (re.test(text)) return "look_planning";
+    if (re.test(text)) return { intent: "look_planning", fromRules: true };
   }
 
   // B4.7: Style report (message-only)
   for (const re of STYLE_REPORT_PATTERNS) {
-    if (re.test(text)) return "style_report";
+    if (re.test(text)) return { intent: "style_report", fromRules: true };
   }
 
   // B4.7: Look analyze / diary (image + message)
   if (hasImage) {
     for (const re of LOOK_ANALYZE_PATTERNS) {
-      if (re.test(text)) return "look_analyze";
+      if (re.test(text)) return { intent: "look_analyze", fromRules: true };
     }
     for (const re of WARDROBE_PATTERNS) {
-      if (re.test(text)) return "wardrobe";
+      if (re.test(text)) return { intent: "wardrobe", fromRules: true };
     }
   }
 
   // B3: Search
   for (const re of SEARCH_PATTERNS) {
-    if (re.test(text)) return "search";
+    if (re.test(text)) return { intent: "search", fromRules: true };
   }
 
   // Image with very short or no text often means "find similar"
   if (hasImage && text.length <= 30) {
     const lower = text.toLowerCase();
     if (!text || /^(this|like this|similar|find (something )?like this|anything like this)[.?!]?\s*$/i.test(text)) {
-      return "search";
+      return { intent: "search", fromRules: true };
     }
     if (/^(what (about|do you think)|how (do i look|does this look)|feedback)/i.test(lower)) {
-      return "styling";
+      return { intent: "styling", fromRules: true };
     }
   }
 
+  // No rule matched — default styling; caller may use LLM to reclassify
+  return { intent: "styling", fromRules: false };
+}
+
+/**
+ * LLM fallback for intent when no rule matched. Returns one of VALID_INTENTS; defaults to "styling" on error.
+ * @param {{ message: string, imageUrls?: string[], history?: Object[] }} input
+ * @returns {Promise<"match_wishlist" | "look_planning" | "look_analyze" | "style_report" | "wardrobe" | "search" | "styling">}
+ */
+export async function classifyIntentWithLLM(input) {
+  const { message, imageUrls, history } = input;
+  const text = (message || "").trim();
+  const hasImage = Array.isArray(imageUrls) && imageUrls.length > 0;
+  const recentContext =
+    Array.isArray(history) && history.length > 0
+      ? history
+          .slice(-4)
+          .map((m) => `${m.role}: ${(m.content || "").slice(0, 80)}`)
+          .join("\n")
+      : "";
+
+  const systemContent = `You are a classifier for a fashion app chat. Given the user's message (and whether they attached an image), choose the single best intent. Reply with JSON only: { "intent": "<value>" }.
+
+Valid intents:
+- match_wishlist: user wants to match their wishlist/saved items to their style ("match my wishlist to me", "which items suit my style").
+- look_planning: user wants multiple looks/outfits for an occasion ("plan looks for vacation", "outfits for a trip", "what to wear for my holiday").
+- style_report: user wants their style report ("style report", "generate my style report").
+- look_analyze: user has an image and wants to add/analyze it in their fashion diary ("add to diary", "save this look", "analyze this outfit").
+- wardrobe: user has an image and wants to add items to their wardrobe from the look ("add to wardrobe", "extract items from this look").
+- search: user wants to find/browse products or items ("find a blue dress", "show me sneakers", "something like this" with image).
+- styling: styling advice, outfit suggestions, "get ready", "what should I wear", feedback on outfit, trends, general fashion help.
+
+If the user attached an image and says something vague like "like this" or "similar", use search. If they ask how they look or for feedback on their outfit, use styling.`;
+
+  const userContent =
+    (recentContext ? `Recent conversation:\n${recentContext}\n\n` : "") +
+    `Current message: ${text.slice(0, 500)}${hasImage ? "\n(User attached an image.)" : ""}\n\nReply with JSON only: { "intent": "<one of the valid intents>" }`;
+
+  try {
+    const out = await complete(
+      [
+        { role: "system", content: systemContent },
+        { role: "user", content: userContent },
+      ],
+      { responseFormat: "json_object", maxTokens: 64, temperature: 0.1 }
+    );
+    const intent = out?.intent && typeof out.intent === "string" ? out.intent.trim().toLowerCase() : null;
+    if (VALID_INTENTS.includes(intent)) return intent;
+  } catch (err) {
+    console.warn("[router] LLM intent classification failed:", err?.message);
+  }
   return "styling";
+}
+
+/**
+ * Classify turn intent: rules first, then LLM when no rule matched. Kept for backward compatibility; returns intent string only.
+ * @param {{ message: string, imageUrls?: string[] }} input
+ * @returns {"match_wishlist" | "look_planning" | "look_analyze" | "style_report" | "wardrobe" | "search" | "styling"}
+ */
+export function classifyIntent(input) {
+  const result = classifyIntentByRules(input);
+  return result.intent;
 }
 
 /**
@@ -295,7 +370,8 @@ async function runLookPlanningForConversation(input, context) {
     const result = await runLookPlanning({
       occasion,
       userId: userId || undefined,
-      generateImages: false,
+      generateImages: true,
+      imageStyle: "on_model", // full outfit on person for "plan looks for beach" etc.; flat_lay = items laid out
     });
     const looks = result.looks ?? [];
     const planSummary = result.planSummary ?? null;
@@ -384,12 +460,16 @@ async function runMatchWishlistForConversation(input, context) {
 
 /**
  * Route a user turn to the appropriate agent and return the agent result.
+ * Hybrid: rule-based classification first; when no rule matches, LLM classifies (fallback to styling on error).
  * @param {{ message: string, imageUrls?: string[], history: Object[] }} input
  * @param {{ userId: string }} context
  * @returns {Promise<{ reply: string, flowType?: string, flowContext?: object }>}
  */
 export async function route(input, context) {
-  const intent = classifyIntent(input);
+  const ruleResult = classifyIntentByRules(input);
+  const intent = ruleResult.fromRules
+    ? ruleResult.intent
+    : await classifyIntentWithLLM(input);
 
   if (intent === "match_wishlist") {
     return runMatchWishlistForConversation(input, context);

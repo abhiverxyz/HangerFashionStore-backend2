@@ -114,3 +114,49 @@ export async function embedImage(imageUrl, options = {}) {
   if (!text) throw new Error("Could not get description from image for embedding");
   return embed(text, options);
 }
+
+const IMAGE_DESCRIPTION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+const imageDescriptionCache = new Map(); // url -> { text, expires }
+
+/**
+ * Get image description for search (vision only). Used when combining image + user query.
+ * Results are cached by image URL for a short TTL to speed up refine searches.
+ * @param {string} imageUrl - Public image URL or data URL
+ * @returns {Promise<string>}
+ */
+export async function getImageDescriptionForSearch(imageUrl) {
+  const url = typeof imageUrl === "string" && imageUrl.trim() ? imageUrl.trim() : null;
+  if (!url) throw new Error("imageUrl is required");
+  const now = Date.now();
+  const cached = imageDescriptionCache.get(url);
+  if (cached && cached.expires > now) return cached.text;
+  const description = await complete(
+    [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: IMAGE_DESCRIPTION_PROMPT },
+          { type: "image_url", image_url: { url } },
+        ],
+      },
+    ],
+    { responseFormat: null, maxTokens: 150 }
+  );
+  const text = typeof description === "string" ? description.trim() : "";
+  if (!text) throw new Error("Could not get description from image");
+  imageDescriptionCache.set(url, { text, expires: now + IMAGE_DESCRIPTION_CACHE_TTL_MS });
+  return text;
+}
+
+/**
+ * Embed image and user query together for search. Use when both image and text query are present.
+ * @param {string} imageUrl - Public image URL
+ * @param {string} userQuery - User's text query (e.g. "pants like this")
+ * @param {object} options - { provider?, model? }
+ * @returns {Promise<number[]>}
+ */
+export async function embedImageWithQuery(imageUrl, userQuery, options = {}) {
+  const description = await getImageDescriptionForSearch(imageUrl);
+  const combined = `${description} User wants: ${String(userQuery).trim()}`;
+  return embed(combined.slice(0, 8000), options);
+}

@@ -84,13 +84,13 @@ model Product {
   embedding                  String?
   embedding_vector           Unsupported("vector")?
   embeddingGeneratedAt       DateTime?
-  visual_embedding           String?
-  visual_embedding_vector    Unsupported("vector")?
-  visualEmbeddingGeneratedAt DateTime?
   createdAt                  DateTime                 @default(now())
   updatedAt                  DateTime                 @updatedAt
   syncedAt                   DateTime?
   ftsVector                  Unsupported("tsvector")?
+  visualEmbeddingGeneratedAt DateTime?
+  visual_embedding           String?
+  visual_embedding_vector    Unsupported("vector")?
   cartItems                  CartItem[]
   microStoreProducts         MicroStoreProduct[]
   brand                      Brand                    @relation(fields: [brandId], references: [id], onDelete: Cascade)
@@ -156,44 +156,46 @@ model ProductIntelligence {
 }
 
 model MicroStore {
-  id              String               @id @default(cuid())
-  brandId         String?
-  name            String
-  description     String?
-  logoUrl         String?
-  coverImageUrl   String?
-  heroVideoUrl    String?
-  featured        Boolean              @default(false)
-  isActive        Boolean              @default(true)
-  order           Int                  @default(0)
-  status          String               @default("draft")
-  createdBy       String               @default("admin")
-  createdByUserId String?
-  vibe            String?
-  trends          String?
-  categories      String?
-  tags            String?
-  styleNotes      String?
-  config          String?
-  minProducts     Int                  @default(20)
-  maxProducts     Int                  @default(50)
-  productCount    Int                  @default(0)
-  lastChangedAt   DateTime?
-  lastGeneratedAt DateTime?
-  sections        String?
-  publishedAt       DateTime?
-  archivedAt        DateTime?
-  deletedAt         DateTime?
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  microstoreScore   Float                @default(0)
-  visibilityScope   String?              @default("all")
-  visibilityUserId  String?
-  brand             Brand?               @relation(fields: [brandId], references: [id], onDelete: Cascade)
-  followers         MicroStoreFollower[]
-  products          MicroStoreProduct[]
-  views             MicroStoreView[]
-  visibleTo         MicroStoreVisibleTo[]
+  id               String                @id @default(cuid())
+  brandId          String?
+  name             String
+  description      String?
+  logoUrl          String?
+  coverImageUrl    String?
+  heroVideoUrl     String?
+  featured         Boolean               @default(false)
+  isActive         Boolean               @default(true)
+  order            Int                   @default(0)
+  status           String                @default("draft")
+  createdBy        String                @default("admin")
+  createdByUserId  String?
+  vibe             String?
+  trends           String?
+  categories       String?
+  tags             String?
+  styleNotes       String?
+  config           String?
+  minProducts      Int                   @default(20)
+  maxProducts      Int                   @default(50)
+  productCount     Int                   @default(0)
+  lastChangedAt    DateTime?
+  publishedAt      DateTime?
+  archivedAt       DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  microstoreScore  Float                 @default(0)
+  lastGeneratedAt  DateTime?
+  sections         String?
+  deletedAt        DateTime?
+  visibilityScope  String?               @default("all")
+  visibilityUserId String?
+  aiGenerating     Boolean               @default(false)
+  cachedStoreData  String?
+  brand            Brand?                @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  followers        MicroStoreFollower[]
+  products         MicroStoreProduct[]
+  views            MicroStoreView[]
+  visibleTo        MicroStoreVisibleTo[]
 
   @@index([brandId])
   @@index([featured])
@@ -260,7 +262,6 @@ model FeedPost {
 model User {
   id                     String                @id @default(cuid())
   email                  String?               @unique
-  username               String?               @unique
   passwordHash           String
   firstName              String?
   lastName               String?
@@ -275,6 +276,8 @@ model User {
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
   lastLoginAt            DateTime?
+  username               String?               @unique
+  agentMemories          AgentMemory[]
   brandAdmins            BrandAdmin[]
   brandFollowers         BrandFollower[]
   brandPageViews         BrandPageView[]
@@ -306,7 +309,6 @@ model User {
   styleHistory           UserStyleHistory[]
   wardrobeItems          Wardrobe[]
   wishlistItems          Wishlist[]
-  agentMemories          AgentMemory[]
 
   @@index([email])
   @@index([username])
@@ -501,17 +503,16 @@ model MicroStoreVisibleTo {
 }
 
 model MicroStoreCreationContext {
-  id                 String   @id @default(cuid())
-  title              String
-  description        String?
-  vibe               String?
-  category           String?
-  trend              String?
-  referenceImageUrl  String?
-  order              Int      @default(0)
-  isActive           Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  vibe        String?
+  category    String?
+  trend       String?
+  order       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([isActive])
   @@index([order])
@@ -601,32 +602,27 @@ model UserStyleHistory {
   @@index([persona])
 }
 
-// B1.1 User Profile Service: style profile (hybrid), history summary + recent events, need/motivation, quiz
 model UserProfile {
-  id                         String    @id @default(uuid())
-  userId                     String    @unique
-  // Legacy: kept for existing rows; prefer styleProfileData when set
-  profileJson                Json?
-  // Style profile (hybrid: fixed fields + blob)
-  styleProfileUpdatedAt      DateTime?
-  styleProfileSource         String?
-  styleProfileData           Json?
-  // History: aggregated summary; recent events from UserEvent
-  historySummary             Json?
-  // Fashion need & motivation (User Profile Agent writes these)
-  fashionNeed                String?
-  fashionNeedUpdatedAt       DateTime?
-  fashionMotivation          String?
-  fashionMotivationUpdatedAt DateTime?
-  // Quiz (submit via API)
-  quizResponses              Json?
-  quizSubmittedAt            DateTime?
-  quizVersion                String?
-  // Style report (B4): latest report payload for rendering; regenerated from last 10-15 looks
-  latestStyleReportData       Json?
+  id                           String    @id @default(uuid())
+  userId                       String    @unique
+  profileJson                  Json?
+  updatedAt                    DateTime  @default(now())
+  fashionMotivation            String?
+  fashionMotivationUpdatedAt   DateTime?
+  fashionNeed                  String?
+  fashionNeedUpdatedAt         DateTime?
+  historySummary               Json?
+  quizResponses                Json?
+  quizSubmittedAt              DateTime?
+  quizVersion                  String?
+  styleProfileData             Json?
+  styleProfileSource           String?
+  styleProfileUpdatedAt        DateTime?
+  latestStyleReportData        Json?
   latestStyleReportGeneratedAt DateTime?
-  updatedAt                  DateTime  @default(now())
-  user                       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  preferenceGraphJson           Json?
+  preferenceGraphUpdatedAt     DateTime?
+  user                         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
 }
@@ -680,13 +676,12 @@ model Look {
   @@index([vibe, occasion])
 }
 
-// Look classification tags: admin-managed tags for classifying user looks (used by Look Analysis)
 model LookClassificationTag {
   id          String   @id @default(uuid())
-  name        String   @unique // slug/code (e.g. "casual", "work")
-  label       String   // display name (e.g. "Casual", "Work")
+  name        String   @unique
+  label       String
   description String?
-  sortOrder    Int      @default(0)
+  sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -744,12 +739,12 @@ model ConversationMessage {
   conversationId String
   role           String
   content        String
-  imageUrl       String?       // legacy single image; prefer imageUrls
-  imageUrls      String[]      @default([]) // multi-image support
+  imageUrl       String?
   flowType       String?
   flowContext    String?
   metadata       String?
   createdAt      DateTime     @default(now())
+  imageUrls      String[]     @default([])
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId])
@@ -758,26 +753,26 @@ model ConversationMessage {
 }
 
 model Trend {
-  id          String                @id @default(uuid())
-  trendName   String
-  description String?
-  keywords    String
-  category    String?
-  status      String                @default("active")
-  seasonality String?
-  region      String?
-  isCurated   Boolean               @default(true)
-  source      String?
-  strength    Int?                  // 1-10, 10 = strongest (B1.3)
-  parentId    String?
-  impactedItemTypes String?         // e.g. "knits, outerwear, trousers"
-  tellTaleSigns     String?         // visual/style identifiers, tell-tale signs
-  createdBy   String?
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
-  parent      Trend?                @relation("TrendHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
-  children    Trend[]               @relation("TrendHierarchy")
-  mappings    TrendProductMapping[]
+  id                String                @id @default(uuid())
+  trendName         String
+  description       String?
+  keywords          String
+  category          String?
+  status            String                @default("active")
+  seasonality       String?
+  region            String?
+  isCurated         Boolean               @default(true)
+  createdBy         String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  source            String?
+  parentId          String?
+  strength          Int?
+  impactedItemTypes String?
+  tellTaleSigns     String?
+  parent            Trend?                @relation("TrendHierarchy", fields: [parentId], references: [id])
+  children          Trend[]               @relation("TrendHierarchy")
+  mappings          TrendProductMapping[]
 
   @@unique([trendName, parentId])
   @@index([status])
@@ -787,9 +782,8 @@ model Trend {
   @@index([parentId])
 }
 
-// B1.2/B1.3 Fashion Content Service: styling rules (hybrid; strength + hierarchy)
 model StylingRule {
-  id        String       @id @default(uuid())
+  id        String        @id @default(uuid())
   title     String?
   body      String
   ruleType  String?
@@ -797,12 +791,12 @@ model StylingRule {
   subject   String?
   tags      Json?
   source    String?
-  status    String       @default("active")
-  strength  Int?         // 1-10, 10 = very strong (B1.3)
+  status    String        @default("active")
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
   parentId  String?
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
-  parent    StylingRule? @relation("StylingRuleHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  strength  Int?
+  parent    StylingRule?  @relation("StylingRuleHierarchy", fields: [parentId], references: [id])
   children  StylingRule[] @relation("StylingRuleHierarchy")
 
   @@index([status])
@@ -811,12 +805,11 @@ model StylingRule {
   @@index([parentId])
 }
 
-// B1.3: Admin / agent inputs (URL, text, image) for the Fashion Content Agent to combine
 model FashionContentSource {
   id        String   @id @default(uuid())
-  type      String   // "url" | "text" | "image"
-  payload   String   // URL, raw text, or image URL
-  status    String   @default("pending") // "pending" | "processed"
+  type      String
+  payload   String
+  status    String   @default("pending")
   createdBy String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -825,10 +818,9 @@ model FashionContentSource {
   @@index([type])
 }
 
-// B1.3: Safety allowlist — only these domains can be fetched by the agent for web sources
 model AllowedFashionDomain {
   id        String   @id @default(uuid())
-  domain    String   @unique // e.g. "vogue.com" (no protocol/path)
+  domain    String   @unique
   createdAt DateTime @default(now())
 
   @@index([domain])
@@ -987,6 +979,7 @@ model StyleReport {
   recommendedProducts   String?
   htmlContent           String?
   htmlGeneratedAt       DateTime?
+  cachedReportData      String?
   styleProfile          StyleProfile? @relation(fields: [styleProfileId], references: [id], onDelete: Cascade)
   user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1081,10 +1074,10 @@ model DecisionTrace {
 model AgentMemory {
   id        String   @id @default(cuid())
   userId    String
-  goalType  String // e.g., "shopping", "looks_builder", "style_analysis"
-  goal      Json // Stored goal object
-  plan      Json? // Stored plan object
-  outcome   Json? // Result and evaluation
+  goalType  String
+  goal      Json
+  plan      Json?
+  outcome   Json?
   success   Boolean
   timestamp DateTime @default(now())
   metadata  Json?
@@ -1097,13 +1090,12 @@ model AgentMemory {
 }
 
 model ModelConfig {
-  scope    String   @unique
-  provider String
-  model    String
+  scope     String   @unique
+  provider  String
+  model     String
   updatedAt DateTime @updatedAt
 }
 
-// Style report agent: min/max number of looks to use (agent always uses latest looks in this range)
 model StyleReportSettings {
   id        String   @id @default("default")
   minLooks  Int      @default(1)
@@ -1120,15 +1112,18 @@ model GeneratedImage {
   createdAt DateTime @default(now())
 }
 
-// Styling Agent improvement loop: tone avatars + playbook (goals, suggested flows)
 model StylingAvatar {
   id                   String   @id @default(uuid())
   name                 String
   slug                 String   @unique
   description          String?
-  systemPromptAddition String   // injected into agent context for tone
+  systemPromptAddition String
+  defaultGreeting      String?
+  goalsAddition        String?
+  preferencesOverride  String?
   sortOrder            Int      @default(0)
   isDefault            Boolean  @default(false)
+  imageUrl             String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -1138,7 +1133,7 @@ model StylingAvatar {
 
 model StylingAgentPlaybook {
   id        String   @id @default(uuid())
-  type      String   // "goals" | "instruction" | "example_flow"
+  type      String
   content   String
   sortOrder Int      @default(0)
   isActive  Boolean  @default(true)

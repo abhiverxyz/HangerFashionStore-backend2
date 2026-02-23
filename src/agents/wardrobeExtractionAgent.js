@@ -6,6 +6,7 @@
 
 import { analyzeImage } from "../utils/imageAnalysis.js";
 import { complete } from "../utils/llm.js";
+import { resolveImageUrlForExternal } from "../utils/storage.js";
 import { searchProducts } from "../domain/product/product.js";
 import { getLook } from "../domain/looks/look.js";
 
@@ -136,9 +137,14 @@ export async function run(input, context = {}) {
     return { slots: [], error: "Provide lookId, imageUrl, or imageBuffer" };
   }
 
+  const imageInput =
+    typeof imageForAnalysis === "string"
+      ? await resolveImageUrlForExternal(imageForAnalysis)
+      : imageForAnalysis;
+
   let analysis;
   try {
-    analysis = await analyzeImage(imageForAnalysis, { responseFormat: "json_object" });
+    analysis = await analyzeImage(imageInput, { responseFormat: "json_object" });
   } catch (err) {
     console.warn("[wardrobeExtractionAgent] Image analysis failed:", err?.message);
     return { slots: [], error: "Image analysis failed: " + (err?.message || "unknown error") };

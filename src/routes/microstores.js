@@ -9,6 +9,7 @@ import {
   getOrCreateStoreForUser,
   parseSections,
 } from "../domain/microstore/microstore.js";
+import { triggerBuildPreferenceGraph } from "../domain/preferences/preferenceGraph.js";
 import { scoreAndOrderMicrostores } from "../domain/personalization/personalization.js";
 
 const router = Router();
@@ -99,6 +100,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const store = await followMicrostore(req.params.id, req.userId);
     if (!store) return res.status(404).json({ error: "Microstore not found" });
+    triggerBuildPreferenceGraph(req.userId);
     res.json({ followed: true, store: { id: store.id, followerCount: store._count?.followers ?? 0 } });
   })
 );
@@ -110,6 +112,7 @@ router.delete(
   asyncHandler(async (req, res) => {
     const store = await unfollowMicrostore(req.params.id, req.userId);
     if (!store) return res.status(404).json({ error: "Microstore not found" });
+    triggerBuildPreferenceGraph(req.userId);
     res.json({ followed: false, store: { id: store.id, followerCount: store._count?.followers ?? 0 } });
   })
 );
