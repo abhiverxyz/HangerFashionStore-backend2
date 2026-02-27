@@ -4,15 +4,18 @@ import { getProduct } from "../product/product.js";
 
 /**
  * List wardrobe items for a user.
- * @param {Object} opts - { userId, limit?, offset?, category? }
+ * @param {Object} opts - { userId, limit?, offset?, category?, excludeSource? } — excludeSource e.g. 'look' hides full look images from grid
  */
 export async function listWardrobe(opts = {}) {
-  const { userId, limit = 48, offset = 0, category } = opts;
+  const { userId, limit = 48, offset = 0, category, excludeSource } = opts;
   const nid = normalizeId(userId);
   if (!nid) return { items: [], total: 0 };
   const prisma = getPrisma();
   const where = { userId: nid };
   if (category) where.category = String(category);
+  if (excludeSource) {
+    where.OR = [{ source: null }, { source: { not: excludeSource } }];
+  }
 
   const [items, total] = await Promise.all([
     prisma.wardrobe.findMany({
@@ -37,8 +40,8 @@ export async function getWardrobeItem(id) {
 }
 
 /**
- * Create a wardrobe item (e.g. after upload).
- * @param {Object} data - { userId, imageUrl, brand?, category?, color?, size?, tags? }
+ * Create a wardrobe item (e.g. after upload or from extracted slot).
+ * @param {Object} data - { userId, imageUrl, brand?, category?, color?, size?, tags?, source?, extractionId?, extractionSlotIndex? }
  */
 export async function createWardrobeItem(data) {
   const prisma = getPrisma();
@@ -53,6 +56,9 @@ export async function createWardrobeItem(data) {
       color: data.color ?? null,
       size: data.size ?? null,
       tags: data.tags ?? null,
+      source: data.source ?? null,
+      extractionId: data.extractionId ?? null,
+      extractionSlotIndex: data.extractionSlotIndex != null ? Number(data.extractionSlotIndex) : null,
     },
   });
 }
@@ -83,12 +89,10 @@ export async function deleteWardrobeItem(id) {
 
 /**
  * Create wardrobe items from selected product IDs (B4.6 accept-suggestions).
- * For each product: uses first product image as imageUrl, maps category_lvl1 → category, color_primary → color, brand name → brand.
- * @param {Object} opts - { userId: string, productIds: string[] }
- * @returns {Promise<{ created: import("@prisma/client").Wardrobe[] }>}
+ * @param {Object} opts - { userId, productIds, extractionId?, extractionSlotIndex? }
  */
 export async function createWardrobeItemsFromProducts(opts) {
-  const { userId, productIds } = opts ?? {};
+  const { userId, productIds, extractionId, extractionSlotIndex } = opts ?? {};
   const uid = normalizeId(userId);
   if (!uid) throw new Error("userId required");
   const ids = Array.isArray(productIds) ? productIds.filter((id) => normalizeId(id)) : [];
@@ -108,6 +112,9 @@ export async function createWardrobeItemsFromProducts(opts) {
       color: product.color_primary ?? null,
       size: null,
       tags: product.title ?? null,
+      source: extractionId != null ? "extraction" : null,
+      extractionId: extractionId ?? null,
+      extractionSlotIndex: extractionSlotIndex != null ? Number(extractionSlotIndex) : null,
     });
     created.push(item);
   }

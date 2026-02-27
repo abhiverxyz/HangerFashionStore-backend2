@@ -86,10 +86,34 @@ function buildProfileSummaries(profile) {
 /**
  * Get or create UserProfile row for a user. Does not create User.
  */
+const USER_PROFILE_SELECT_SAFE = {
+  userId: true,
+  profileJson: true,
+  updatedAt: true,
+  fashionMotivation: true,
+  fashionMotivationUpdatedAt: true,
+  fashionNeed: true,
+  fashionNeedUpdatedAt: true,
+  historySummary: true,
+  quizResponses: true,
+  quizSubmittedAt: true,
+  quizVersion: true,
+  styleProfileData: true,
+  styleProfileSource: true,
+  styleProfileUpdatedAt: true,
+  latestStyleReportData: true,
+  latestStyleReportGeneratedAt: true,
+  preferenceGraphJson: true,
+  preferenceGraphUpdatedAt: true,
+};
+
 async function getOrCreateProfileRow(prisma, userId) {
   const uid = normalizeId(userId);
   if (!uid) return null;
-  let row = await prisma.userProfile.findUnique({ where: { userId: uid } });
+  let row = await prisma.userProfile.findUnique({
+    where: { userId: uid },
+    select: { id: true, userId: true },
+  });
   if (!row) {
     row = await prisma.userProfile.create({
       data: { userId: uid },
@@ -115,7 +139,10 @@ export async function getUserProfile(userId, opts = {}) {
   since.setDate(since.getDate() - days);
 
   const [row, recentEvents] = await Promise.all([
-    prisma.userProfile.findUnique({ where: { userId: uid } }),
+    prisma.userProfile.findUnique({
+      where: { userId: uid },
+      select: USER_PROFILE_SELECT_SAFE,
+    }),
     prisma.userEvent.findMany({
       where: { userId: uid, timestamp: { gte: since } },
       orderBy: { timestamp: "desc" },
@@ -131,6 +158,8 @@ export async function getUserProfile(userId, opts = {}) {
       fashionNeed: { text: null, updatedAt: null },
       fashionMotivation: { text: null, updatedAt: null },
       quiz: { responses: null, submittedAt: null, version: null },
+      personalInsight: null,
+      personalInsightUpdatedAt: null,
     };
     return { ...defaultProfile, summary: buildProfileSummaries(defaultProfile) };
   }
@@ -169,6 +198,8 @@ export async function getUserProfile(userId, opts = {}) {
       submittedAt: row.quizSubmittedAt?.toISOString() ?? null,
       version: row.quizVersion ?? null,
     },
+    personalInsight: row.personalInsight ?? null,
+    personalInsightUpdatedAt: row.personalInsightUpdatedAt?.toISOString?.() ?? null,
   };
   return { ...profile, summary: buildProfileSummaries(profile) };
 }
@@ -258,6 +289,28 @@ export async function writeNeedMotivation(userId, payload = {}) {
   await prisma.userProfile.update({
     where: { id: row.id },
     data,
+  });
+}
+
+/**
+ * Write personal insight (Personal Insight Agent). Internal only; no HTTP route.
+ * @param {string} userId
+ * @param {Object} payload - { insight: string }
+ */
+export async function writePersonalInsight(userId, payload = {}) {
+  const uid = normalizeId(userId);
+  if (!uid) throw new Error("userId required");
+  if (typeof payload.insight !== "string" || !payload.insight.trim()) return;
+  const prisma = getPrisma();
+  const row = await getOrCreateProfileRow(prisma, uid);
+  if (!row) throw new Error("User profile not found");
+  const now = new Date();
+  await prisma.userProfile.update({
+    where: { id: row.id },
+    data: {
+      personalInsight: payload.insight.trim(),
+      personalInsightUpdatedAt: now,
+    },
   });
 }
 

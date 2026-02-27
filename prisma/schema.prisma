@@ -185,6 +185,7 @@ model MicroStore {
   updatedAt        DateTime              @updatedAt
   microstoreScore  Float                 @default(0)
   lastGeneratedAt  DateTime?
+  ideasForYou      String?   // JSON array: [{ title, text, gradientId }] for Store for you
   sections         String?
   deletedAt        DateTime?
   visibilityScope  String?               @default("all")
@@ -308,7 +309,9 @@ model User {
   userProfile            UserProfile?
   styleHistory           UserStyleHistory[]
   wardrobeItems          Wardrobe[]
+  wardrobeExtractions    WardrobeExtraction[]
   wishlistItems          Wishlist[]
+  allowedMicrostoreCreator AllowedMicrostoreCreator?
 
   @@index([email])
   @@index([username])
@@ -338,6 +341,9 @@ model Wardrobe {
   color                String?
   size                 String?
   tags                 String?
+  source               String?   // 'look' | 'upload' | 'extraction' — exclude 'look' from wardrobe items grid
+  extractionId         String?   // when added from extracted slot
+  extractionSlotIndex  Int?      // when added from extracted slot
   embedding            String?
   visionAnalysis       String?
   embeddingGeneratedAt DateTime?
@@ -346,8 +352,25 @@ model Wardrobe {
   user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([userId, extractionId, extractionSlotIndex])
   @@index([category])
   @@index([color])
+}
+
+model WardrobeExtraction {
+  id        String   @id @default(cuid())
+  userId    String
+  lookId    String?
+  imageUrl  String
+  status    String   // pending | extracting | done | failed
+  slots     String?  // JSON array of extraction slots
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, status])
 }
 
 model Order {
@@ -503,19 +526,29 @@ model MicroStoreVisibleTo {
 }
 
 model MicroStoreCreationContext {
-  id          String   @id @default(cuid())
-  title       String
-  description String?
-  vibe        String?
-  category    String?
-  trend       String?
-  order       Int      @default(0)
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  title              String
+  description        String?
+  vibe               String?
+  category           String?
+  trend              String?
+  referenceImageUrl  String?
+  order              Int      @default(0)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([isActive])
   @@index([order])
+}
+
+model AllowedMicrostoreCreator {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Wishlist {
@@ -622,6 +655,8 @@ model UserProfile {
   latestStyleReportGeneratedAt DateTime?
   preferenceGraphJson           Json?
   preferenceGraphUpdatedAt     DateTime?
+  personalInsight              String?
+  personalInsightUpdatedAt     DateTime?
   user                         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -1096,6 +1131,16 @@ model ModelConfig {
   updatedAt DateTime @updatedAt
 }
 
+/// Singleton: admin-defined construct for "Store for you" (Wardrobe). (a) Image/banner, (b) style notes template, (c) product selection rules.
+model StoreForYouConstruct {
+  id                    String   @id @default("default")
+  startingImageUrl      String?
+  bannerImageUrl        String?
+  styleNotesTemplate    String?
+  productSelectionRules String?
+  updatedAt             DateTime @updatedAt
+}
+
 model StyleReportSettings {
   id        String   @id @default("default")
   minLooks  Int      @default(1)
@@ -1142,4 +1187,16 @@ model StylingAgentPlaybook {
 
   @@index([type])
   @@index([isActive])
+}
+
+/// Admin-editable prompts and references per agent (e.g. microstore curation). When set, agent uses these instead of code defaults.
+model AgentPrompt {
+  agentId    String
+  promptKey  String
+  content    String   @db.Text
+  references String?  @db.Text
+  updatedAt  DateTime @updatedAt
+
+  @@id([agentId, promptKey])
+  @@map("agent_prompts")
 }

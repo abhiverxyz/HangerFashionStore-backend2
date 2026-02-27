@@ -12,6 +12,30 @@ import {
   createSystemMicrostoresBatch,
   startSystemMicrostoresBatch,
 } from "../../agents/microstoreCurationAgent.js";
+import { urlToStorageKey } from "../../utils/storage.js";
+
+function fallbackKeyFromUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  const u = url.trim();
+  const pathPart = u.replace(/#.*$/, "").split("?")[0] || u;
+  const generatedMatch = pathPart.match(/\/generated\/([a-zA-Z0-9_.-]+\.webp)/i) || pathPart.match(/\/generated\/([a-zA-Z0-9_.-]+)$/i);
+  if (generatedMatch && !generatedMatch[1].includes("..")) return "generated/" + generatedMatch[1];
+  if (u.startsWith("generated/") && !u.includes("..")) return u.split("?")[0] || u;
+  if (u.includes("/uploads/")) {
+    const after = u.split("/uploads/")[1];
+    if (after && !after.includes("..")) return after.split("?")[0] || null;
+  }
+  if (u.startsWith("uploads/") && !u.includes("..")) return u.split("?")[0] || u;
+  return null;
+}
+
+function resolveCoverImageUrlForClient(coverImageUrl) {
+  if (!coverImageUrl || typeof coverImageUrl !== "string") return coverImageUrl;
+  let key = urlToStorageKey(coverImageUrl.trim());
+  if (!key) key = fallbackKeyFromUrl(coverImageUrl);
+  if (key) return `/api/storage/access?key=${encodeURIComponent(key)}`;
+  return coverImageUrl;
+}
 
 const router = Router();
 
@@ -22,6 +46,7 @@ router.get(
     const result = await microstore.listMicrostores({
       userId: null,
       adminBypass: true,
+      excludeSingleUser: true,
       brandId,
       status,
       limit,
@@ -29,8 +54,10 @@ router.get(
     });
     const items = result.items.map((s) => ({
       ...s,
+      coverImageUrl: resolveCoverImageUrlForClient(s.coverImageUrl) ?? s.coverImageUrl,
       sections: microstore.parseSections(s.sections),
       followerCount: s._count?.followers ?? 0,
+      productCount: s._count?.products ?? 0,
     }));
     res.json({ items, total: result.total });
   })
@@ -70,15 +97,60 @@ router.post(
   })
 );
 
+router.post(
+  "/microstores/bulk",
+  asyncHandler(async (req, res) => {
+    const { action, ids } = req.body || {};
+    const validActions = ["archive", "publish", "delete"];
+    if (!validActions.includes(action) || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "body must include action (archive|publish|delete) and non-empty ids array" });
+    }
+    const idList = ids.filter((id) => typeof id === "string" && id.trim()).slice(0, 100);
+    const results = { successCount: 0, errors: [] };
+    for (const id of idList) {
+      try {
+        if (action === "publish") {
+          const updated = await microstore.publishMicrostore(id);
+          if (updated) results.successCount++;
+          else results.errors.push({ id, error: "Not found" });
+        } else if (action === "archive") {
+          const updated = await microstore.archiveMicrostore(id);
+          if (updated) results.successCount++;
+          else results.errors.push({ id, error: "Not found" });
+        } else if (action === "delete") {
+          const updated = await microstore.deleteMicrostore(id);
+          if (updated) results.successCount++;
+          else results.errors.push({ id, error: "Not found" });
+        }
+      } catch (err) {
+        results.errors.push({ id, error: err?.message ?? "Failed" });
+      }
+    }
+    res.json(results);
+  })
+);
+
 router.get(
   "/microstores/:id",
   asyncHandler(async (req, res) => {
     const store = await microstore.getMicrostore(req.params.id, null, true);
     if (!store) return res.status(404).json({ error: "Microstore not found" });
+    const styleNotes =
+      typeof store.styleNotes === "string"
+        ? (() => {
+            try {
+              return JSON.parse(store.styleNotes);
+            } catch {
+              return null;
+            }
+          })()
+        : store.styleNotes;
     res.json({
       ...store,
+      coverImageUrl: resolveCoverImageUrlForClient(store.coverImageUrl) ?? store.coverImageUrl,
       sections: microstore.parseSections(store.sections),
       followerCount: store._count?.followers ?? 0,
+      styleNotes,
     });
   })
 );
@@ -103,8 +175,12 @@ router.put(
 router.put(
   "/microstores/:id/products",
   asyncHandler(async (req, res) => {
+    const id = req.params.id;
+    const store = await microstore.getMicrostore(id, null, true);
+    if (!store) return res.status(404).json({ error: "Microstore not found" });
     const { sections } = req.body || {};
-    const updated = await microstore.setMicroStoreProducts(req.params.id, sections);
+    const scopeBrandId = store.brandId ?? null;
+    const updated = await microstore.setMicroStoreProducts(id, sections, scopeBrandId);
     if (!updated) return res.status(404).json({ error: "Microstore not found" });
     res.json(updated);
   })

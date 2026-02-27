@@ -12,6 +12,8 @@ import {
   urlToStorageKey,
   getPresignedGetUrl,
   getR2PublicBaseUrl,
+  getStorageObject,
+  getLocalObject,
 } from "../utils/storage.js";
 
 const R2_ENABLED = process.env.R2_ENABLED === "true";
@@ -40,8 +42,8 @@ router.get(
       if (payload?.userId) userId = payload.userId;
     }
 
-    // Public keys: no auth required
-    if (key.startsWith("admin-test/")) {
+    // Public keys: no auth required (generated/* = AI-generated cover images, used in img src without credentials)
+    if (key.startsWith("admin-test/") || key.startsWith("generated/")) {
       // allow
     } else {
       if (!userId) {
@@ -52,7 +54,8 @@ router.get(
       if (key.startsWith("user-images/") && parts.length >= 2) {
         if (parts[1] !== userId) return res.status(403).json({ error: "Forbidden" });
       } else if (key.startsWith("wardrobe/") && parts.length >= 2) {
-        if (parts[1] !== userId) return res.status(403).json({ error: "Forbidden" });
+        const wardrobeUserId = parts[1];
+        if (wardrobeUserId !== userId) return res.status(403).json({ error: "Forbidden" });
       } else if (key.startsWith("feed-posts/") && parts.length >= 2) {
         if (parts[1] !== userId) return res.status(403).json({ error: "Forbidden" });
       } else if (key.startsWith("looks/") && parts.length >= 2) {
@@ -61,11 +64,32 @@ router.get(
       // styling-avatars/*, generated/*: any authenticated user
     }
 
+    // For generated/* (cover images): stream the image so img src gets 200 + body (no redirect/CORS issues)
+    if (key.startsWith("generated/")) {
+      const obj = await getStorageObject(key);
+      if (obj && obj.body) {
+        res.setHeader("Content-Type", obj.contentType || "image/webp");
+        res.setHeader("Cache-Control", "private, max-age=3600");
+        obj.body.pipe(res);
+        return;
+      }
+      return res.status(404).send();
+    }
+
     if (R2_ENABLED && getR2PublicBaseUrl()) {
       const presigned = await getPresignedGetUrl(key, 3600);
       if (presigned) {
         return res.redirect(302, presigned);
       }
+    }
+
+    // For local storage: stream the file so the browser gets the image in one request (avoids broken images from redirect)
+    const localObj = getLocalObject(key);
+    if (localObj && localObj.body) {
+      res.setHeader("Content-Type", localObj.contentType || "image/jpeg");
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      localObj.body.pipe(res);
+      return;
     }
 
     return res.redirect(302, "/uploads/" + key);

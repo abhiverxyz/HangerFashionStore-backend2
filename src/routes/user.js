@@ -1,13 +1,23 @@
 /**
- * User-scoped routes: /api/user/feed-posts
+ * User-scoped routes: /api/user/feed-posts, /api/user/can-create-microstore
  */
 import { Router } from "express";
 import { asyncHandler } from "../core/asyncHandler.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import * as contentFeed from "../domain/contentFeed/contentFeed.js";
+import * as allowedMicrostoreCreators from "../domain/allowedMicrostoreCreators/allowedMicrostoreCreators.js";
 
 const router = Router();
 router.use(requireAuth);
+
+/** GET /api/user/can-create-microstore — whether current user can create microstores */
+router.get(
+  "/can-create-microstore",
+  asyncHandler(async (req, res) => {
+    const allowed = await allowedMicrostoreCreators.canCreateMicrostore(req.userId, req.user?.role);
+    res.json({ allowed });
+  })
+);
 
 /** GET /api/user/feed-posts — list current user's posts */
 router.get(

@@ -17,19 +17,18 @@ import { normalizeId } from "../core/helpers.js";
 
 const LOOK_ANALYSIS_MAX_TOKENS = 800;
 const LOOK_ANALYSIS_STEP_MAX_TOKENS = 1000;
+const FAST_LOOK_MAX_TOKENS = 200;
+
+const FAST_LOOK_PROMPT = `Analyze this fashion/outfit image. Return JSON only: { "look": { "shortTitle": "1-3 word descriptive title (e.g. Casual Summer, Bold Evening, Minimal Work)", "comment": "one short sentence", "vibe": "e.g. casual/formal", "occasion": "e.g. work/party", "timeOfDay": "day/evening" or null, "labels": ["tag1","tag2"] } }. Keep it brief. shortTitle must be 1-3 words that best describe the look.`;
 
 /**
  * Run Look Analysis: analyze image → extract comment, vibe, occasion, timeOfDay → persist look.
- * @param {Object} input - { imageUrl?: string, imageBuffer?: Buffer, lookId?: string, userId: string }
- * @param {Object} input.imageUrl - Public image URL (or data URL). Ignored if imageBuffer provided.
- * @param {Buffer} input.imageBuffer - Raw image buffer (e.g. from multipart). Will be uploaded to storage.
- * @param {string} input.contentType - Content type for imageBuffer (e.g. "image/jpeg").
- * @param {string} input.lookId - If provided and imageUrl/look not provided, load look and re-analyze its imageUrl.
- * @param {string} input.userId - Owner for new look; required for create.
- * @returns {Promise<{ comment: string, vibe: string|null, occasion: string|null, timeOfDay: string|null, labels: string[], analysisComment: string, suggestions: string[], lookId: string, look: object }>}
+ * @param {Object} input - { imageUrl?, imageBuffer?, lookId?, userId, fast? }
+ * @param {boolean} [input.fast] - When true, skip second LLM step and context fetch for quick diary add (~1 LLM call instead of 2).
+ * @returns {Promise<{ comment, vibe, occasion, timeOfDay, labels, analysisComment, suggestions, lookId, look }>}
  */
 export async function run(input) {
-  const { imageUrl, imageBuffer, contentType, lookId, userId } = input;
+  const { imageUrl, imageBuffer, contentType, lookId, userId, fast } = input;
   const uid = normalizeId(userId);
 
   let resolvedImageUrl = null;
@@ -55,12 +54,14 @@ export async function run(input) {
 
   const urlForVision = await resolveImageUrlForExternal(resolvedImageUrl);
   const analysis = await analyzeImage(urlForVision, {
+    prompt: fast ? FAST_LOOK_PROMPT : undefined,
     responseFormat: "json_object",
-    maxTokens: LOOK_ANALYSIS_MAX_TOKENS,
+    maxTokens: fast ? FAST_LOOK_MAX_TOKENS : LOOK_ANALYSIS_MAX_TOKENS,
   });
 
   const lookPart = analysis?.look ?? analysis;
   const itemsRaw = Array.isArray(analysis?.items) ? analysis.items : [];
+  const shortTitle = lookPart?.shortTitle?.trim() || null;
   const comment =
     lookPart?.comment ?? lookPart?.description ?? "Nice look!";
   const vibe = lookPart?.vibe ?? null;
@@ -68,27 +69,6 @@ export async function run(input) {
   const timeOfDay = lookPart?.timeOfDay ?? lookPart?.time_of_day ?? null;
   const labels = Array.isArray(lookPart?.labels) ? lookPart.labels : [];
 
-  // Fetch context in parallel (continue on failure)
-  let profile = null;
-  let trends = [];
-  let rules = [];
-  let classificationTagList = [];
-  try {
-    const [profileRes, trendRes, ruleRes, tagRes] = await Promise.all([
-      uid ? getUserProfile(uid) : null,
-      listTrends({ limit: 15, status: "active" }).then((r) => r?.items ?? []),
-      listStylingRules({ limit: 15, status: "active" }).then((r) => r?.items ?? []),
-      listLookClassificationTags({ limit: 100 }).then((r) => r?.items ?? []),
-    ]);
-    profile = profileRes ?? null;
-    trends = Array.isArray(trendRes) ? trendRes : [];
-    rules = Array.isArray(ruleRes) ? ruleRes : [];
-    classificationTagList = Array.isArray(tagRes) ? tagRes : [];
-  } catch (e) {
-    console.warn("[lookAnalysisAgent] profile/trends/rules/tags fetch failed:", e?.message);
-  }
-
-  // Short item summaries for display and for LLM context
   const itemsSummary = itemsRaw.slice(0, 20).map((it) => ({
     type: it?.type ?? null,
     description: it?.description ?? null,
@@ -97,30 +77,59 @@ export async function run(input) {
     style: it?.style_family ?? it?.mood_vibe ?? null,
   }));
 
-  // Second LLM step: analysis comment + suggestions + classification tags (compare to profile, trends/rules, and tag list)
   let analysisComment = comment;
   let suggestions = [];
   let classificationTags = [];
-  try {
-    const analysisResult = await runLookAnalysisStep({
-      look: { comment, vibe, occasion, timeOfDay, labels },
-      itemsSummary,
-      profile,
-      trends,
-      rules,
-      classificationTagList,
-    });
-    if (analysisResult?.analysisComment) analysisComment = String(analysisResult.analysisComment);
-    if (Array.isArray(analysisResult?.suggestions)) suggestions = analysisResult.suggestions.slice(0, 10);
-    if (Array.isArray(analysisResult?.classificationTags)) {
-      const allowedNames = new Set(classificationTagList.map((t) => t.name));
-      classificationTags = analysisResult.classificationTags.filter((n) => allowedNames.has(String(n))).slice(0, 10);
+  let shortSummary = null;
+
+  if (!fast) {
+    // Full analysis: fetch context + second LLM step
+    let profile = null;
+    let trends = [];
+    let rules = [];
+    let classificationTagList = [];
+    try {
+      const [profileRes, trendRes, ruleRes, tagRes] = await Promise.all([
+        uid ? getUserProfile(uid) : null,
+        listTrends({ limit: 15, status: "active" }).then((r) => r?.items ?? []),
+        listStylingRules({ limit: 15, status: "active" }).then((r) => r?.items ?? []),
+        listLookClassificationTags({ limit: 100 }).then((r) => r?.items ?? []),
+      ]);
+      profile = profileRes ?? null;
+      trends = Array.isArray(trendRes) ? trendRes : [];
+      rules = Array.isArray(ruleRes) ? ruleRes : [];
+      classificationTagList = Array.isArray(tagRes) ? tagRes : [];
+    } catch (e) {
+      console.warn("[lookAnalysisAgent] profile/trends/rules/tags fetch failed:", e?.message);
     }
-  } catch (e) {
-    console.warn("[lookAnalysisAgent] analysis step failed:", e?.message);
+
+    try {
+      const analysisResult = await runLookAnalysisStep({
+        look: { comment, vibe, occasion, timeOfDay, labels },
+        itemsSummary,
+        profile,
+        trends,
+        rules,
+        classificationTagList,
+      });
+      if (analysisResult?.analysisComment) analysisComment = String(analysisResult.analysisComment);
+      if (analysisResult?.shortSummary) shortSummary = String(analysisResult.shortSummary).trim();
+      if (Array.isArray(analysisResult?.suggestions)) suggestions = analysisResult.suggestions.slice(0, 10);
+      if (Array.isArray(analysisResult?.classificationTags)) {
+        const allowedNames = new Set(classificationTagList.map((t) => t.name));
+        classificationTags = analysisResult.classificationTags.filter((n) => allowedNames.has(String(n))).slice(0, 10);
+      }
+    } catch (e) {
+      console.warn("[lookAnalysisAgent] analysis step failed:", e?.message);
+    }
+  }
+
+  if (!shortSummary && analysisComment) {
+    shortSummary = suggestions?.length ? `${analysisComment.slice(0, 80)} ${suggestions[0]}`.trim().slice(0, 200) : analysisComment;
   }
 
   const lookData = {
+    shortTitle: shortTitle ?? (vibe && occasion ? `${vibe} ${occasion}`.trim() : vibe ?? occasion),
     comment,
     timeOfDay,
     labels,
@@ -129,6 +138,7 @@ export async function run(input) {
     suggestions,
     itemsSummary,
     classificationTags,
+    shortSummary: shortSummary || null,
   };
 
   let look;
@@ -203,11 +213,12 @@ async function runLookAnalysisStep({ look, itemsSummary, profile, trends, rules,
       ? classificationTagList.map((t) => t.name).join(", ")
       : "casual, formal, work, weekend, party, vacation, date-night, streetwear, minimal, bold, sporty, elegant, cozy, edgy, classic, trendy, bohemian, preppy, athleisure, smart-casual";
 
-  const system = `You are a fashion stylist. Given a look (outfit) description, the items in it, the user's style profile and needs, current fashion trends and styling rules, and a list of allowed classification tag names, produce a short analysis, concrete improvement suggestions, and which classification tags best fit this look.
-Output only a single JSON object with exactly three keys:
+  const system = `You are a fashion stylist. Given a look (outfit) description, the items in it, the user's style profile and needs, current fashion trends and styling rules, and a list of allowed classification tag names, produce a short analysis, concrete improvement suggestions, which classification tags best fit this look, and a single shortSummary.
+Output only a single JSON object with exactly four keys:
 - "analysisComment": string, 2-4 sentences: validate the look, note how it fits the user's profile and current trends/rules, and give brief encouragement or nuance.
 - "suggestions": array of 2-5 strings, each one concrete improvement (e.g. "Try a slightly higher waist to elongate the silhouette" or "This occasion calls for a more structured blazer").
-- "classificationTags": array of 1-5 strings: each must be exactly one of the allowed tag names provided. Pick the tags that best classify this look (e.g. occasion, vibe, style). Use only the exact names from the list.`;
+- "classificationTags": array of 1-5 strings: each must be exactly one of the allowed tag names provided. Pick the tags that best classify this look (e.g. occasion, vibe, style). Use only the exact names from the list.
+- "shortSummary": string, 25-30 words. Combine: what the look is, key validation, and top 1-2 practical suggestions. No filler. Be concise and actionable.`;
 
   const user = `Look: vibe=${look.vibe ?? "unspecified"}, occasion=${look.occasion ?? "unspecified"}, timeOfDay=${look.timeOfDay ?? "unspecified"}, labels=${(look.labels || []).join(", ") || "none"}. Brief description: ${look.comment || "—"}
 
@@ -225,7 +236,7 @@ ${rulesSnippet}
 
 Allowed classification tag names (use only these exact strings in classificationTags): ${tagNamesList}
 
-Respond with JSON only: { "analysisComment": "...", "suggestions": ["...", "..."], "classificationTags": ["tag1", "tag2"] }`;
+Respond with JSON only: { "analysisComment": "...", "suggestions": ["...", "..."], "classificationTags": ["tag1", "tag2"], "shortSummary": "25-30 word concise summary" }`;
 
   const out = await complete(
     [

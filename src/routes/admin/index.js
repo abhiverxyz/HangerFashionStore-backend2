@@ -11,8 +11,11 @@ import brandsRouter from "./brands.js";
 import modelConfigRouter from "./modelConfig.js";
 import contentRouter from "./content.js";
 import microstoresRouter from "./microstores.js";
+import allowedMicrostoreCreatorsRouter from "./allowedMicrostoreCreators.js";
+import storeForYouConstructRouter from "./storeForYouConstruct.js";
 import feedRouter from "./feed.js";
 import storageTestRouter from "./storageTest.js";
+import agentPromptsRouter from "./agentPrompts.js";
 
 const router = Router();
 
@@ -68,7 +71,10 @@ router.use(brandsRouter);
 router.use(modelConfigRouter);
 router.use(contentRouter);
 router.use(microstoresRouter);
+router.use(allowedMicrostoreCreatorsRouter);
+router.use(storeForYouConstructRouter);
 router.use(feedRouter);
 router.use(storageTestRouter);
+router.use(agentPromptsRouter);
 
 export default router;

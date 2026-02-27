@@ -131,6 +131,19 @@ export async function resolveImageUrlForExternal(imageUrl) {
 }
 
 /**
+ * Fetch a URL to a Buffer (for server-side cropping). Uses global fetch.
+ * @param {string} url - Public or presigned image URL
+ * @returns {Promise<Buffer>}
+ */
+export async function fetchUrlToBuffer(url) {
+  if (!url || typeof url !== "string") throw new Error("url is required");
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
+  const ab = await res.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+/**
  * Check if an object exists in R2 and get its metadata (for verify without public read).
  * @param {string} key - Object key
  * @returns {Promise<{ exists: boolean, contentType?: string }>}

@@ -2,9 +2,46 @@ import { getPrisma } from "../../core/db.js";
 import { normalizeId, safeJsonParse } from "../../core/helpers.js";
 
 const MAX_SECTIONS = 3;
+const MIN_PRODUCTS = 20;
+/** Store for you: refresh if last generated older than this (ms). */
+const STORE_FOR_YOU_REFRESH_MS = 2 * 24 * 60 * 60 * 1000;
 const VISIBILITY_SCOPE_ALL = "all";
 const VISIBILITY_SCOPE_SINGLE_USER = "single_user";
 const VISIBILITY_SCOPE_SELECT_USERS = "select_users";
+const CREATED_BY_STORE_FOR_USER = "store_for_user";
+const CREATED_BY_USER = "user";
+
+/**
+ * True if the store is a personal store (only for one user; only in "Store for you"; never in lists).
+ * Personal = (createdBy === 'user' && createdByUserId != null) || createdBy === 'store_for_user'.
+ */
+export function isPersonalStore(store) {
+  if (!store) return false;
+  if (store.createdBy === CREATED_BY_STORE_FOR_USER) return true;
+  if (store.createdBy === CREATED_BY_USER && store.createdByUserId != null && String(store.createdByUserId).trim() !== "") return true;
+  return false;
+}
+
+/**
+ * Owner userId for a personal store: createdByUserId ?? visibilityUserId.
+ */
+export function getPersonalStoreOwnerId(store) {
+  if (!store) return null;
+  const id = store.createdByUserId ?? store.visibilityUserId;
+  return id != null && String(id).trim() !== "" ? String(id) : null;
+}
+
+/**
+ * Prisma where clause to exclude personal stores from a list.
+ */
+function excludePersonalStoresWhere() {
+  return {
+    AND: [
+      { OR: [{ createdBy: { not: CREATED_BY_USER } }, { createdByUserId: null }] },
+      { createdBy: { not: CREATED_BY_STORE_FOR_USER } },
+    ],
+  };
+}
 
 /**
  * Parse sections JSON from MicroStore.
@@ -58,27 +95,54 @@ function visibilityWhere(userId, adminBypass = false) {
 
 const defaultInclude = {
   brand: { select: { id: true, name: true, logoUrl: true } },
-  products: { orderBy: { order: "asc" }, include: { product: { include: { images: { take: 1, orderBy: { position: "asc" } } } } } },
+  products: {
+    orderBy: { order: "asc" },
+    include: {
+      product: {
+        include: {
+          images: { take: 1, orderBy: { position: "asc" } },
+          variants: { take: 1, orderBy: { createdAt: "asc" } },
+          brand: { select: { id: true, name: true, logoUrl: true } },
+        },
+      },
+    },
+  },
   visibleTo: { select: { userId: true } },
   _count: { select: { followers: true } },
 };
 
+/** Lightweight include for list endpoints (no full product trees). */
+const listInclude = {
+  brand: { select: { id: true, name: true, logoUrl: true } },
+  visibleTo: { select: { userId: true } },
+  _count: { select: { followers: true, products: true } },
+};
+
 /**
  * List microstores visible to the user (or all if admin).
- * @param {Object} opts - { userId?, adminBypass?, brandId?, status?, featured?, limit?, offset? }
+ * @param {Object} opts - { userId?, adminBypass?, excludeSingleUser?, brandId?, status?, featured?, limit?, offset? }
+ * @param {boolean} [opts.excludeSingleUser] - when true, exclude single-user (Store for you) stores from the list (e.g. for admin microstores page)
  */
 export async function listMicrostores(opts = {}) {
-  const { userId, adminBypass = false, brandId, status, featured, limit = 24, offset = 0 } = opts;
+  const { userId, adminBypass = false, excludeSingleUser = false, brandId, status, featured, limit = 24, offset = 0 } = opts;
   const prisma = getPrisma();
   const where = { ...visibilityWhere(userId, adminBypass) };
+  if (!adminBypass || excludeSingleUser) {
+    where.AND = where.AND || [];
+    where.AND.push(excludePersonalStoresWhere());
+  }
   if (normalizeId(brandId)) where.brandId = normalizeId(brandId);
-  if (status != null && String(status).trim()) where.status = String(status).trim();
+  if (status != null && String(status).trim()) {
+    const s = String(status).trim();
+    // "published" = show both published and live (legacy/migrated stores may use "live")
+    where.status = s === "published" ? { in: ["published", "live"] } : s;
+  }
   if (featured === true) where.featured = true;
 
   const [items, total] = await Promise.all([
     prisma.microStore.findMany({
       where,
-      include: defaultInclude,
+      include: listInclude,
       orderBy: [{ order: "asc" }, { publishedAt: "desc" }, { updatedAt: "desc" }],
       take: Math.min(Number(limit) || 24, 100),
       skip: Math.max(0, Number(offset) || 0),
@@ -223,6 +287,10 @@ export async function updateMicrostore(id, data) {
 
   const sections = normalizeSectionsInput(sectionsInput);
   if (sections.length > 0) {
+    const total = sections.reduce((sum, s) => sum + (s.productIds?.length ?? 0), 0);
+    if (total < MIN_PRODUCTS) {
+      throw new Error(`At least ${MIN_PRODUCTS} products required (got ${total})`);
+    }
     await setMicroStoreProductsInternal(prisma, nid, sections);
   }
 
@@ -251,6 +319,10 @@ export async function setMicroStoreProducts(microStoreId, sections, scopeBrandId
   if (!nid) return null;
   const prisma = getPrisma();
   const normalized = normalizeSectionsInput(sections);
+  const totalProducts = normalized.reduce((sum, s) => sum + (s.productIds?.length ?? 0), 0);
+  if (totalProducts < MIN_PRODUCTS) {
+    throw new Error(`At least ${MIN_PRODUCTS} products required (got ${totalProducts})`);
+  }
   const scopeBrand = normalizeId(scopeBrandId);
   if (scopeBrand) {
     const allIds = [...new Set(normalized.flatMap((s) => s.productIds))];
@@ -300,12 +372,14 @@ async function setMicroStoreProductsInternal(prisma, microStoreId, sections) {
 }
 
 /**
- * Follow a microstore.
+ * Follow a microstore. Only mutates if the user can see the store (visibility check first).
  */
 export async function followMicrostore(microStoreId, userId) {
   const mid = normalizeId(microStoreId);
   const uid = normalizeId(userId);
   if (!mid || !uid) return null;
+  const existing = await getMicrostore(mid, uid, false);
+  if (!existing) return null;
   const prisma = getPrisma();
   await prisma.microStoreFollower.upsert({
     where: { microStoreId_userId: { microStoreId: mid, userId: uid } },
@@ -316,12 +390,14 @@ export async function followMicrostore(microStoreId, userId) {
 }
 
 /**
- * Unfollow a microstore.
+ * Unfollow a microstore. Only mutates if the user can see the store (visibility check first).
  */
 export async function unfollowMicrostore(microStoreId, userId) {
   const mid = normalizeId(microStoreId);
   const uid = normalizeId(userId);
   if (!mid || !uid) return null;
+  const existing = await getMicrostore(mid, uid, false);
+  if (!existing) return null;
   const prisma = getPrisma();
   await prisma.microStoreFollower.deleteMany({ where: { microStoreId: mid, userId: uid } });
   return getMicrostore(mid, uid);
@@ -329,11 +405,48 @@ export async function unfollowMicrostore(microStoreId, userId) {
 
 /**
  * Publish a microstore (set status published, publishedAt).
+ * Fails if the store does not have all steps complete: name, cover image, at least 20 products, and style notes.
  */
 export async function publishMicrostore(id) {
   const nid = normalizeId(id);
   if (!nid) return null;
   const prisma = getPrisma();
+  const store = await prisma.microStore.findUnique({
+    where: { id: nid },
+    select: { name: true, description: true, coverImageUrl: true, styleNotes: true, sections: true, productCount: true, status: true, deletedAt: true },
+  });
+  if (!store || store.deletedAt) return null;
+  const nameOk = typeof store.name === "string" && store.name.trim().length > 0;
+  const coverOk = typeof store.coverImageUrl === "string" && store.coverImageUrl.trim().length > 0;
+  let productCount = store.productCount ?? 0;
+  if (productCount < MIN_PRODUCTS && store.sections) {
+    const sections = parseSections(store.sections);
+    productCount = sections.reduce((sum, s) => sum + (s.productIds?.length ?? 0), 0);
+  }
+  const productsOk = productCount >= MIN_PRODUCTS;
+  let styleNotesOk = false;
+  if (store.styleNotes) {
+    try {
+      const sn = typeof store.styleNotes === "string" ? JSON.parse(store.styleNotes) : store.styleNotes;
+      if (sn && typeof sn === "object") {
+        const links = sn.links;
+        const text = sn.text;
+        styleNotesOk = (Array.isArray(links) && links.length > 0) || (typeof text === "string" && text.trim().length > 0);
+      }
+    } catch (_) {}
+  }
+  if (!nameOk) {
+    throw new Error("Store cannot be published: name is required.");
+  }
+  if (!coverOk) {
+    throw new Error("Store cannot be published: cover image is required. Complete the wizard (step 2).");
+  }
+  if (!productsOk) {
+    throw new Error(`Store cannot be published: at least ${MIN_PRODUCTS} products are required (has ${productCount}). Complete the wizard (step 3).`);
+  }
+  if (!styleNotesOk) {
+    throw new Error("Store cannot be published: at least one style note is required. Complete the wizard (step 4).");
+  }
   return prisma.microStore.update({
     where: { id: nid },
     data: { status: "published", publishedAt: new Date() },
@@ -358,8 +471,8 @@ export async function archiveMicrostore(id) {
 const STATUS_PENDING_APPROVAL = "pending_approval";
 
 /**
- * Submit microstore for approval (brand users). Only draft microstores can be submitted.
- * Sets status to pending_approval.
+ * Submit microstore for approval (brand/users). Draft, published, or live stores can be submitted.
+ * Published/live stores can be submitted to republish after edits (sets status to pending_approval).
  */
 export async function submitMicrostoreForApproval(id) {
   const nid = normalizeId(id);
@@ -370,8 +483,9 @@ export async function submitMicrostoreForApproval(id) {
     select: { id: true, status: true, deletedAt: true },
   });
   if (!store || store.deletedAt) return null;
-  if (store.status !== "draft") {
-    throw new Error(`Microstore must be in draft status to submit; current: ${store.status}`);
+  const allowed = ["draft", "published", "live"];
+  if (!allowed.includes(store.status)) {
+    throw new Error(`Microstore must be draft, published, or live to submit; current: ${store.status}`);
   }
   return prisma.microStore.update({
     where: { id: nid },
@@ -498,8 +612,60 @@ export async function searchMicrostores(query, opts = {}) {
 }
 
 /**
+ * Refresh "Store for you" for a user: re-run curation, update store and products. Used when lastGeneratedAt is older than 2 days.
+ * @param {string} userId
+ * @returns {Promise<object|null>} Updated store with defaultInclude, or null if no store found.
+ */
+export async function refreshStoreForUser(userId) {
+  const uid = normalizeId(userId);
+  if (!uid) return null;
+  const prisma = getPrisma();
+  const existing = await prisma.microStore.findFirst({
+    where: {
+      deletedAt: null,
+      OR: [
+        { createdBy: CREATED_BY_USER, createdByUserId: uid },
+        { createdBy: CREATED_BY_STORE_FOR_USER, visibilityUserId: uid },
+      ],
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (!existing) return null;
+
+  const { runMicrostoreCuration } = await import("../../agents/microstoreCurationAgent.js");
+  const curated = await runMicrostoreCuration({ userId: uid });
+  const styleNotesStr = typeof curated.styleNotes === "string" ? curated.styleNotes : JSON.stringify(curated.styleNotes || {});
+  const ideasForYouStr =
+    Array.isArray(curated.ideasForYou) && curated.ideasForYou.length > 0
+      ? JSON.stringify(curated.ideasForYou)
+      : null;
+
+  await prisma.microStore.update({
+    where: { id: existing.id },
+    data: {
+      name: curated.name,
+      description: curated.description ?? existing.description,
+      styleNotes: styleNotesStr,
+      vibe: curated.vibe ?? existing.vibe,
+      trends: curated.trends ?? existing.trends,
+      categories: curated.categories ?? existing.categories,
+      ideasForYou: ideasForYouStr,
+      lastGeneratedAt: new Date(),
+    },
+  });
+  await setMicroStoreProductsInternal(prisma, existing.id, curated.sections || []);
+
+  return prisma.microStore.findUnique({
+    where: { id: existing.id },
+    include: defaultInclude,
+  });
+}
+
+/**
  * Get or create the "Store for you" microstore for a user.
- * Finds existing store with visibilityScope single_user and visibilityUserId = userId; otherwise runs curation and creates one.
+ * If store exists and lastGeneratedAt is older than 2 days, refreshes it (ideas + products) then returns.
+ * Finds existing personal store: (createdBy === 'user' AND createdByUserId === uid) OR (createdBy === 'store_for_user' AND visibilityUserId === uid).
+ * Creates with createdBy = 'user', createdByUserId = uid for new stores.
  */
 export async function getOrCreateStoreForUser(userId) {
   const uid = normalizeId(userId);
@@ -508,30 +674,51 @@ export async function getOrCreateStoreForUser(userId) {
   const existing = await prisma.microStore.findFirst({
     where: {
       deletedAt: null,
-      visibilityScope: VISIBILITY_SCOPE_SINGLE_USER,
-      visibilityUserId: uid,
-      createdBy: "store_for_user",
+      OR: [
+        { createdBy: CREATED_BY_USER, createdByUserId: uid },
+        { createdBy: CREATED_BY_STORE_FOR_USER, visibilityUserId: uid },
+      ],
     },
     include: defaultInclude,
     orderBy: { updatedAt: "desc" },
   });
-  if (existing) return existing;
 
+  if (existing) {
+    const cutoff = new Date(Date.now() - STORE_FOR_YOU_REFRESH_MS);
+    const lastGen = existing.lastGeneratedAt;
+    if (lastGen && lastGen < cutoff) {
+      try {
+        const refreshed = await refreshStoreForUser(uid);
+        if (refreshed) return refreshed;
+      } catch (e) {
+        console.warn("[microstore] refreshStoreForUser failed:", e?.message);
+      }
+    }
+    return existing;
+  }
+
+  const { getStoreForYouConstruct } = await import("../storeForYouConstruct/storeForYouConstruct.js");
+  const construct = await getStoreForYouConstruct();
   const { runMicrostoreCuration } = await import("../../agents/microstoreCurationAgent.js");
   const curated = await runMicrostoreCuration({ userId: uid });
   const styleNotesStr = typeof curated.styleNotes === "string" ? curated.styleNotes : JSON.stringify(curated.styleNotes || {});
+  const ideasForYouStr =
+    Array.isArray(curated.ideasForYou) && curated.ideasForYou.length > 0
+      ? JSON.stringify(curated.ideasForYou)
+      : null;
 
   const store = await prisma.microStore.create({
     data: {
       name: curated.name,
       description: curated.description,
-      coverImageUrl: curated.coverImageUrl ?? null,
+      coverImageUrl: curated.coverImageUrl ?? construct.startingImageUrl ?? null,
       styleNotes: styleNotesStr,
       vibe: curated.vibe ?? null,
       trends: curated.trends ?? null,
       categories: curated.categories ?? null,
+      ideasForYou: ideasForYouStr,
       status: "draft",
-      createdBy: "store_for_user",
+      createdBy: CREATED_BY_USER,
       createdByUserId: uid,
       visibilityScope: VISIBILITY_SCOPE_SINGLE_USER,
       visibilityUserId: uid,

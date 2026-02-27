@@ -12,14 +12,48 @@ import { analyzeImage } from "../utils/imageAnalysis.js";
 import { getActiveCreationContextsForLLM } from "../domain/microstore/creationContext.js";
 import { searchProducts } from "../domain/product/product.js";
 import { getUserProfile } from "../domain/userProfile/userProfile.js";
+import { listTrends } from "../domain/fashionContent/fashionContent.js";
+import { getAgentPromptContent } from "../domain/agentPrompts/agentPrompts.js";
 import { normalizeId } from "../core/helpers.js";
 import { getPrisma } from "../core/db.js";
+
+const AGENT_ID = "microstoreCuration";
+
+/** Gradient IDs for "Ideas for you" cards (shared with frontend). */
+const IDEA_GRADIENT_IDS = ["coral", "navy", "mint", "blush", "sage", "berry"];
 
 const STORE_FOR_YOU_SECTIONS = ["Tops", "Bottoms", "Footwear"];
 const MAX_SECTIONS = 3;
 const STYLE_NOTES_COUNT = 3;
-const PRODUCTS_PER_STORE = 30;
+
+/** Preset colours for style note cards (aligned with frontend; agent uses these for suggestions). */
+const STYLE_CARD_PRESETS = [
+  { id: "coral", backgroundColor: "#e07a5f", fontStyle: "#1d3557" },
+  { id: "navy", backgroundColor: "#1d3557", fontStyle: "#f2cc8f" },
+  { id: "mint", backgroundColor: "#81b29a", fontStyle: "#1d3557" },
+  { id: "blush", backgroundColor: "#f4a261", fontStyle: "#ffffff" },
+  { id: "slate", backgroundColor: "#3d405b", fontStyle: "#e9c46a" },
+  { id: "sage", backgroundColor: "#2a9d8f", fontStyle: "#ffffff" },
+  { id: "berry", backgroundColor: "#9b5de5", fontStyle: "#ffffff" },
+  { id: "cream", backgroundColor: "#fefae0", fontStyle: "#283618" },
+  { id: "terracotta", backgroundColor: "#c67b5c", fontStyle: "#1a1a1a" },
+  { id: "forest", backgroundColor: "#2d5a27", fontStyle: "#e8e0d5" },
+  { id: "lavender", backgroundColor: "#b8a9c9", fontStyle: "#2c1810" },
+  { id: "sunset", backgroundColor: "#e76f51", fontStyle: "#ffffff" },
+  { id: "ocean", backgroundColor: "#0077b6", fontStyle: "#ffffff" },
+  { id: "mustard", backgroundColor: "#e9c46a", fontStyle: "#1d3557" },
+  { id: "rose", backgroundColor: "#e0a0a0", fontStyle: "#3d2c29" },
+  { id: "charcoal", backgroundColor: "#264653", fontStyle: "#e9c46a" },
+];
+const PRODUCTS_PER_STORE = 50;
+/** Store for you: 25–40 products. */
+const PRODUCTS_PER_STORE_FOR_YOU_MIN = 25;
+const PRODUCTS_PER_STORE_FOR_YOU_MAX = 40;
+const PRODUCTS_PER_STORE_FOR_YOU_TARGET = 35;
 const DEFAULT_SUGGESTED_PRODUCTS_LIMIT = 24;
+const IDEAS_FOR_YOU_MIN = 1;
+const IDEAS_FOR_YOU_MAX = 3;
+const IDEAS_FOR_YOU_MAX_TOKENS = 400;
 const SYSTEM_BATCH_DEFAULT_COUNT = 5;
 const VALIDATE_COHERENCE_MAX_TOKENS = 200;
 const PRODUCT_SUMMARIES_CAP = 20;
@@ -46,6 +80,82 @@ function assignProductToPredefinedSection(product) {
   if (cat.includes("shoe") || cat.includes("footwear") || cat.includes("sneaker") || cat.includes("boot") || title.includes("shoe") || title.includes("sneaker") || title.includes("boot") || title.includes("sandal")) return "Footwear";
   if (cat.includes("outerwear") || cat.includes("jacket") || title.includes("jacket") || title.includes("coat")) return "Tops";
   return "Bottoms";
+}
+
+/**
+ * Generate 1–3 "Ideas for you" from user profile + fashion trends. For Store for you.
+ * @param {string} userId
+ * @returns {Promise<Array<{ title: string, text: string, gradientId: string }>>}
+ */
+export async function generateIdeasForUser(userId) {
+  const uid = normalizeId(userId);
+  if (!uid) return [];
+
+  const [profile, trendsResult] = await Promise.all([
+    getUserProfile(uid),
+    listTrends({ limit: 15, status: "active" }),
+  ]);
+
+  const profileSummary = profile?.summary?.overall ?? "No profile yet; suggest versatile, on-trend ideas.";
+  const trendList = (trendsResult?.items ?? []).slice(0, 12);
+  const trendsText =
+    trendList.length > 0
+      ? trendList
+          .map(
+            (t) =>
+              `- ${(t.trendName || "").trim()}: ${(t.description || t.keywords || "").toString().trim().slice(0, 120)}`
+          )
+          .join("\n")
+      : "Current fashion: versatile, modern styles.";
+
+  const systemPrompt = `You are a fashion advisor. Given a user's style profile and current trends, suggest 1 to 3 short "ideas for you" — personalised tips or suggestions (e.g. "Try X with Y", "This season focus on Z").
+Output JSON only, no markdown, with key "ideas": array of 1 to 3 items. Each item: { "title": "short headline (3-6 words)", "text": "1-2 sentences, actionable and friendly" }.`;
+
+  const userPrompt = `User profile summary: ${profileSummary.slice(0, 600)}
+
+Current trends:
+${trendsText}
+
+Respond with JSON only: { "ideas": [ { "title": "...", "text": "..." }, ... ] }. Between 1 and 3 ideas.`;
+
+  try {
+    const out = await complete(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      { responseFormat: "json_object", maxTokens: IDEAS_FOR_YOU_MAX_TOKENS }
+    );
+    const raw = Array.isArray(out?.ideas) ? out.ideas : [];
+    const ideas = raw
+      .slice(0, IDEAS_FOR_YOU_MAX)
+      .filter((i) => i && (i.title || i.text))
+      .map((i, idx) => ({
+        title: String(i.title || "Idea").trim().slice(0, 80),
+        text: String(i.text || "").trim().slice(0, 200),
+        gradientId: IDEA_GRADIENT_IDS[idx % IDEA_GRADIENT_IDS.length],
+      }));
+    if (ideas.length < IDEAS_FOR_YOU_MIN && ideas.length > 0) return ideas;
+    if (ideas.length < IDEAS_FOR_YOU_MIN) {
+      return [
+        {
+          title: "Refresh your look",
+          text: "Mix one trend from this season with a piece you already love for an easy update.",
+          gradientId: IDEA_GRADIENT_IDS[0],
+        },
+      ];
+    }
+    return ideas;
+  } catch (e) {
+    console.warn("[microstoreCurationAgent] generateIdeasForUser failed:", e?.message);
+    return [
+      {
+        title: "Curated for you",
+        text: "We've picked pieces that match your style and current trends.",
+        gradientId: IDEA_GRADIENT_IDS[0],
+      },
+    ];
+  }
 }
 
 /**
@@ -87,17 +197,128 @@ Reply with JSON only: { "ok": boolean, "reason": string | null, "suggestedSearch
   return null;
 }
 
+const MAX_NAME_WORDS = 8;
+const STYLE_NOTES_MIN = 2;
+const STYLE_NOTES_MAX = 5;
+
 /**
- * Choose which image to use as store cover: generated or one of the product images.
+ * Validate microstore name: max 8 words, direct and understandable.
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+function validateMicrostoreName(name, vibe, trend, category) {
+  const n = (name || "").trim();
+  if (!n) return { ok: false, reason: "Name is empty" };
+  const words = n.split(/\s+/).filter(Boolean);
+  if (words.length > MAX_NAME_WORDS) {
+    return { ok: false, reason: `Name has ${words.length} words (max ${MAX_NAME_WORDS}). Use a shorter, direct name.` };
+  }
+  return { ok: true };
+}
+
+/**
+ * Validate microstore description: non-empty, aligns with store concept.
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+function validateMicrostoreDescription(name, description) {
+  const d = (description || "").trim();
+  if (!d) return { ok: false, reason: "Description is empty" };
+  return { ok: true };
+}
+
+/**
+ * Validate style notes payload: at least one link or non-empty text; each link has title or description; count in range.
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+function validateStyleNotes(styleNotesPayload) {
+  const text = (styleNotesPayload?.text || "").trim();
+  const links = Array.isArray(styleNotesPayload?.links) ? styleNotesPayload.links : [];
+  if (!text && links.length === 0) return { ok: false, reason: "Style notes must have at least one tip or link" };
+  if (links.length < STYLE_NOTES_MIN || links.length > STYLE_NOTES_MAX) {
+    return { ok: false, reason: `Style notes should have ${STYLE_NOTES_MIN}–${STYLE_NOTES_MAX} items (got ${links.length})` };
+  }
+  for (let i = 0; i < links.length; i++) {
+    const link = links[i];
+    const hasTitle = (link?.title || "").trim().length > 0;
+    const hasDesc = (link?.description || "").trim().length > 0;
+    const hasText = (link?.text || "").trim().length > 0;
+    if (!hasTitle && !hasDesc && !hasText) {
+      return { ok: false, reason: `Style note item ${i + 1} must have a title or description` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Validate that the chosen cover image is appropriate for the store (optional LLM check).
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+async function validateCoverImage(imageUrl, storeName, description, vibe) {
+  if (!imageUrl || !storeName) return { ok: true };
+  try {
+    const prompt = `Does this image URL represent a fashion microstore named "${(storeName || "").slice(0, 60)}" (${(description || "").slice(0, 80)}, vibe: ${(vibe || "").slice(0, 40)})? Reply JSON only: { "ok": boolean, "reason": string | null }.`;
+    const out = await analyzeImage(imageUrl, {
+      prompt,
+      responseFormat: "json_object",
+      maxTokens: 80,
+    });
+    if (out && typeof out.ok === "boolean" && !out.ok) {
+      return { ok: false, reason: out.reason || "Image does not match store" };
+    }
+  } catch (e) {
+    console.warn("[microstoreCurationAgent] validateCoverImage failed:", e?.message);
+  }
+  return { ok: true };
+}
+
+/**
+ * Build cover image prompt from admin template or fallback. Scene-based, no text. Returns prompt string.
+ */
+async function buildCoverImagePrompt(opts) {
+  const { name, description, vibe, trends, categories, styleReferenceText = "" } = opts;
+  const template = await getAgentPromptContent(AGENT_ID, "generateCover_imageTemplate", {
+    name: (name || "").trim().slice(0, 80),
+    description: (description || "").trim().slice(0, 100),
+    vibe: (vibe || "modern").trim().slice(0, 60),
+    trends: trends ? String(trends).slice(0, 80) : "",
+    categories: categories ? String(categories).slice(0, 80) : "",
+  });
+  if (template && typeof template === "string" && template.trim()) {
+    return template.trim() + styleReferenceText;
+  }
+  const fallback = [
+    "Fashion lifestyle hero image, editorial. Set the scene to match the store:",
+    (name || "").trim().slice(0, 80),
+    (description || "").trim().slice(0, 100),
+    "Atmosphere:",
+    (vibe || "modern").trim().slice(0, 60),
+    "No text, no words, no letters on the image.",
+    trends ? `Trends: ${String(trends).slice(0, 80)}` : "",
+    categories ? `Categories: ${String(categories).slice(0, 80)}` : "",
+  ].filter(Boolean).join(" ");
+  return fallback + styleReferenceText;
+}
+
+/**
+ * Choose which image to use as store cover: generated (one or more) or one of the product images.
+ * @param {string|string[]} generatedImageUrl - Single URL or array of generated hero URLs (e.g. single model vs multiple models).
  * @returns {Promise<string|null>} Chosen image URL, or null if none.
  */
 async function selectStoreImage(generatedImageUrl, products, storeName, description, vibe) {
   const candidates = [];
-  if (generatedImageUrl && typeof generatedImageUrl === "string" && generatedImageUrl.trim()) {
-    candidates.push({ type: "generated", url: generatedImageUrl.trim(), label: "Generated hero image" });
+  const generatedUrls = Array.isArray(generatedImageUrl)
+    ? generatedImageUrl.filter((u) => u && typeof u === "string" && u.trim())
+    : generatedImageUrl && typeof generatedImageUrl === "string" && generatedImageUrl.trim()
+      ? [generatedImageUrl.trim()]
+      : [];
+  if (generatedUrls.length === 1) {
+    candidates.push({ type: "generated", url: generatedUrls[0], label: "Generated hero image" });
+  } else if (generatedUrls.length > 1) {
+    generatedUrls.forEach((url, i) => {
+      candidates.push({ type: "generated", url, label: `Generated hero ${i + 1} (${i === 0 ? "single model" : "multiple models"})` });
+    });
   }
   const productList = Array.isArray(products) ? products : [];
-  for (let i = 0; i < productList.length && candidates.length < 1 + MAX_PRODUCT_IMAGE_CANDIDATES; i++) {
+  for (let i = 0; i < productList.length && candidates.length < (generatedUrls.length || 1) + MAX_PRODUCT_IMAGE_CANDIDATES; i++) {
     const p = productList[i];
     const img = p?.images?.[0];
     const url = img?.src ?? img?.url;
@@ -105,7 +326,7 @@ async function selectStoreImage(generatedImageUrl, products, storeName, descript
       candidates.push({ type: "product", url: url.trim(), label: `Product: ${(p.title || "").slice(0, 50)}`, productIndex: i });
     }
   }
-  if (candidates.length === 0) return generatedImageUrl || null;
+  if (candidates.length === 0) return generatedUrls[0] || null;
   if (candidates.length === 1) return candidates[0].url;
 
   try {
@@ -157,9 +378,16 @@ export async function runMicrostoreCuration(opts = {}) {
       : "No examples configured.";
 
   let userContext = "";
+  let trendsForSearch = "";
   if (isStoreForYou) {
-    const profile = await getUserProfile(userId);
-    if (profile?.styleProfile?.data) {
+    const [profile, trendsRes] = await Promise.all([
+      getUserProfile(userId),
+      listTrends({ limit: 12, status: "active" }),
+    ]);
+    const summary = profile?.summary;
+    if (summary?.overall) {
+      userContext = ` User profile: ${summary.overall.slice(0, 800)}.`;
+    } else if (profile?.styleProfile?.data) {
       try {
         const data = typeof profile.styleProfile.data === "string" ? JSON.parse(profile.styleProfile.data) : profile.styleProfile.data;
         userContext = ` User style profile (use to tailor store): ${JSON.stringify(data).slice(0, 800)}.`;
@@ -169,6 +397,10 @@ export async function runMicrostoreCuration(opts = {}) {
     } else {
       userContext = " User has no detailed style profile; create a versatile, on-trend microstore.";
     }
+    const trendItems = trendsRes?.items ?? [];
+    if (trendItems.length > 0) {
+      trendsForSearch = trendItems.map((t) => t.trendName || t.keywords).filter(Boolean).join(" ");
+    }
   }
 
   const topicPart = topic || (isStoreForYou ? "personalized store for this user" : "curated fashion microstore");
@@ -177,9 +409,9 @@ Use these examples of store titles and descriptions as reference (match tone and
 ${examplesText}
 
 Output JSON only, no markdown, with keys: title, description, styleNotes, vibe, trends, categories.
-- title: One short, catchy store name (e.g. "Casual Chic Denim for Work").
+- title: One short store name: max ${MAX_NAME_WORDS} words, direct and understandable (e.g. "Casual Chic Denim for Work").
 - description: One sentence describing the store.
-- styleNotes: Array of 2 to ${STYLE_NOTES_COUNT} short style tips. Each item: { "text": "short tip" } or { "title": "...", "url": "", "type": "text", "description": "..." }.
+- styleNotes: Array of ${STYLE_NOTES_MIN} to ${STYLE_NOTES_MAX} short style tips. Each item: { "text": "short tip" } or { "title": "...", "url": "", "type": "text", "description": "..." }.
 - vibe: One vibe/occasion string (e.g. "casual work").
 - trends: Comma-separated trends.
 - categories: Comma-separated categories.`;
@@ -196,42 +428,48 @@ Respond with JSON only.`;
     { responseFormat: "json_object", maxTokens: 800 }
   );
 
-  const title = llmOut.title || llmOut.name || "Curated Store";
-  const description = llmOut.description || "";
+  let title = llmOut.title || llmOut.name || "Curated Store";
+  let description = llmOut.description || "";
   const vibeOut = llmOut.vibe || vibe || "";
   const trendsOut = llmOut.trends || trend || "";
   const categoriesOut = llmOut.categories || category || "";
+  const nameValidation = validateMicrostoreName(title, vibeOut, trendsOut, categoriesOut);
+  if (!nameValidation.ok) {
+    const words = title.trim().split(/\s+/).filter(Boolean);
+    if (words.length > MAX_NAME_WORDS) title = words.slice(0, MAX_NAME_WORDS).join(" ");
+    console.warn("[microstoreCurationAgent] runMicrostoreCuration name validation:", nameValidation.reason);
+  }
+  const descValidation = validateMicrostoreDescription(title, description);
+  if (!descValidation.ok && !description) description = `Curated collection: ${title}`;
+  if (!descValidation.ok) console.warn("[microstoreCurationAgent] runMicrostoreCuration description validation:", descValidation.reason);
+
   let styleNotes = llmOut.styleNotes;
   if (!Array.isArray(styleNotes) || styleNotes.length === 0) {
     styleNotes = [{ text: "Mix textures and fits for a modern look." }];
   }
-  styleNotes = styleNotes.slice(0, STYLE_NOTES_COUNT).map((n) => {
+  styleNotes = styleNotes.slice(0, STYLE_NOTES_MAX).map((n) => {
     if (typeof n === "string") return { text: n };
     if (n.text) return { text: n.text };
     return { title: n.title || "Tip", url: n.url || "", type: n.type || "text", description: n.description };
   });
 
-  const searchQuery = [title, description, vibeOut, trendsOut].filter(Boolean).join(" ");
+  const searchQuery = [title, description, vibeOut, trendsOut, trendsForSearch].filter(Boolean).join(" ");
+  const productLimit = isStoreForYou ? PRODUCTS_PER_STORE_FOR_YOU_MAX : PRODUCTS_PER_STORE;
   const { items: products } = await searchProducts({
     query: searchQuery,
     brandId: normalizeId(brandId) || undefined,
-    limit: PRODUCTS_PER_STORE,
+    limit: productLimit,
   });
 
-  const sectionLabels = isStoreForYou ? STORE_FOR_YOU_SECTIONS : (llmOut.sectionLabels && Array.isArray(llmOut.sectionLabels) ? llmOut.sectionLabels.slice(0, MAX_SECTIONS) : ["Tops", "Bottoms", "Accessories"]);
-
+  // Store for you: single section "For you" with 25–40 products. Others: single section "All" or multi-section.
+  const sectionLabels = isStoreForYou ? ["For you"] : ["All"];
   const sections = sectionLabels.map((label) => ({ label, productIds: [] }));
+
   if (isStoreForYou) {
-    for (const p of products) {
-      const sec = assignProductToPredefinedSection(p);
-      const idx = sectionLabels.indexOf(sec);
-      if (idx >= 0 && sections[idx].productIds.length < 20) sections[idx].productIds.push(p.id);
-    }
-    for (const p of products) {
-      if (sections.every((s) => !s.productIds.includes(p.id))) {
-        const idx = sectionLabels.indexOf(assignProductToPredefinedSection(p));
-        if (idx >= 0 && sections[idx].productIds.length < 20) sections[idx].productIds.push(p.id);
-      }
+    const capped = products.slice(0, Math.min(products.length, PRODUCTS_PER_STORE_FOR_YOU_MAX));
+    const count = Math.max(PRODUCTS_PER_STORE_FOR_YOU_MIN, Math.min(capped.length, PRODUCTS_PER_STORE_FOR_YOU_TARGET));
+    for (let i = 0; i < count && i < capped.length; i++) {
+      sections[0].productIds.push(capped[i].id);
     }
   } else {
     let i = 0;
@@ -242,7 +480,7 @@ Respond with JSON only.`;
   }
 
   let sectionsClean = sections.map((s) => ({ label: s.label, productIds: s.productIds }));
-  let currentProducts = products;
+  let currentProducts = isStoreForYou ? products.slice(0, sections[0].productIds.length) : products;
   let hasReselected = false;
 
   const productSummaries = currentProducts.slice(0, PRODUCT_SUMMARIES_CAP).map((p) => ({
@@ -255,22 +493,16 @@ Respond with JSON only.`;
     const { items: reselectedProducts } = await searchProducts({
       query: refinedQuery,
       brandId: normalizeId(brandId) || undefined,
-      limit: PRODUCTS_PER_STORE,
+      limit: productLimit,
     });
     if (reselectedProducts.length > 0) {
       currentProducts = reselectedProducts;
       const sections2 = sectionLabels.map((label) => ({ label, productIds: [] }));
       if (isStoreForYou) {
-        for (const p of currentProducts) {
-          const sec = assignProductToPredefinedSection(p);
-          const idx = sectionLabels.indexOf(sec);
-          if (idx >= 0 && sections2[idx].productIds.length < 20) sections2[idx].productIds.push(p.id);
-        }
-        for (const p of currentProducts) {
-          if (sections2.every((s) => !s.productIds.includes(p.id))) {
-            const idx = sectionLabels.indexOf(assignProductToPredefinedSection(p));
-            if (idx >= 0 && sections2[idx].productIds.length < 20) sections2[idx].productIds.push(p.id);
-          }
+        const capped = reselectedProducts.slice(0, PRODUCTS_PER_STORE_FOR_YOU_MAX);
+        const count = Math.max(PRODUCTS_PER_STORE_FOR_YOU_MIN, Math.min(capped.length, PRODUCTS_PER_STORE_FOR_YOU_TARGET));
+        for (let i = 0; i < count && i < capped.length; i++) {
+          sections2[0].productIds.push(capped[i].id);
         }
       } else {
         let i = 0;
@@ -312,26 +544,84 @@ Respond with JSON only.`;
       console.warn("[microstoreCurationAgent] Reference image analysis failed:", err?.message);
     }
   }
-  const imagePromptParts = [
-    "Fashion lifestyle hero image, editorial, clean background, no text",
-    vibeOut || "modern style",
-    title,
-    description ? description.slice(0, 100) : "",
-    trendsOut ? `Trends: ${trendsOut.slice(0, 80)}` : "",
-    categoriesOut ? `Categories: ${categoriesOut.slice(0, 80)}` : "",
-  ].filter(Boolean);
-  const imagePrompt = imagePromptParts.join(", ") + styleReferenceText;
-
+  const basePrompt = await buildCoverImagePrompt({
+    name: title,
+    description,
+    vibe: vibeOut,
+    trends: trendsOut,
+    categories: categoriesOut,
+    styleReferenceText,
+  });
+  const generatedUrls = [];
   try {
-    const { imageUrl } = await generateImage(imagePrompt, { aspectRatio: "3:4" });
-    generatedImageUrl = imageUrl;
+    const promptSingle = `${basePrompt}. One fashion model.`;
+    const res1 = await generateImage(promptSingle, { aspectRatio: "3:4" });
+    if (res1?.imageUrl) generatedUrls.push(res1.imageUrl);
   } catch (err) {
-    console.warn("[microstoreCurationAgent] Hero image generation failed:", err?.message);
+    console.warn("[microstoreCurationAgent] Hero image (single model) failed:", err?.message);
+  }
+  try {
+    const promptMultiple = `${basePrompt}. Two or three fashion models.`;
+    const res2 = await generateImage(promptMultiple, { aspectRatio: "3:4" });
+    if (res2?.imageUrl) generatedUrls.push(res2.imageUrl);
+  } catch (err) {
+    console.warn("[microstoreCurationAgent] Hero image (multiple models) failed:", err?.message);
+  }
+  generatedImageUrl = generatedUrls.length > 0 ? (generatedUrls.length === 1 ? generatedUrls[0] : generatedUrls) : null;
+
+  let coverImageUrl = await selectStoreImage(generatedImageUrl, currentProducts, title, description, vibeOut);
+  const imageValidation = await validateCoverImage(coverImageUrl, title, description, vibeOut);
+  if (!imageValidation.ok && currentProducts.length > 0) {
+    const firstProductImage = currentProducts[0]?.images?.[0];
+    const url = firstProductImage?.src ?? firstProductImage?.url;
+    if (url) {
+      console.warn("[microstoreCurationAgent] Cover image validation failed, using product image:", imageValidation.reason);
+      coverImageUrl = url;
+    }
   }
 
-  const coverImageUrl = await selectStoreImage(generatedImageUrl, currentProducts, title, description, vibeOut);
+  const styleNotesPayload = {
+    text: styleNotes.find((n) => n.text)?.text || "",
+    links: styleNotes.map((n, idx) => {
+      const preset = STYLE_CARD_PRESETS[idx % STYLE_CARD_PRESETS.length];
+      const link = {
+        title: n.title || n.text || "Tip",
+        url: n.url || "",
+        type: (n.type || "text").toLowerCase(),
+        description: n.description || n.text || "",
+        backgroundColor: n.backgroundColor ?? preset.backgroundColor,
+        fontStyle: n.fontStyle ?? preset.fontStyle,
+      };
+      if (n.imageUrl && String(n.imageUrl).trim()) link.imageUrl = String(n.imageUrl).trim();
+      return link;
+    }),
+  };
+  const styleValidation = validateStyleNotes(styleNotesPayload);
+  if (!styleValidation.ok) {
+    console.warn("[microstoreCurationAgent] runMicrostoreCuration style notes validation:", styleValidation.reason);
+    if (styleNotesPayload.links.length < STYLE_NOTES_MIN) {
+      while (styleNotesPayload.links.length < STYLE_NOTES_MIN) {
+        const fallbackPreset = STYLE_CARD_PRESETS[styleNotesPayload.links.length % STYLE_CARD_PRESETS.length];
+        styleNotesPayload.links.push({
+          title: "Style tip",
+          url: "",
+          type: "text",
+          description: "Mix textures and fits for a modern look.",
+          backgroundColor: fallbackPreset.backgroundColor,
+          fontStyle: fallbackPreset.fontStyle,
+        });
+      }
+    }
+  }
 
-  const styleNotesPayload = { text: styleNotes.find((n) => n.text)?.text || "", links: styleNotes.map((n) => ({ title: n.title || n.text || "Tip", url: n.url || "", type: (n.type || "text").toLowerCase(), description: n.description || n.text || "" })) };
+  let ideasForYou = [];
+  if (isStoreForYou && userId) {
+    try {
+      ideasForYou = await generateIdeasForUser(userId);
+    } catch (e) {
+      console.warn("[microstoreCurationAgent] generateIdeasForUser failed:", e?.message);
+    }
+  }
 
   return {
     name: title,
@@ -342,7 +632,60 @@ Respond with JSON only.`;
     vibe: vibeOut,
     trends: trendsOut,
     categories: categoriesOut,
+    ideasForYou: ideasForYou.length > 0 ? ideasForYou : undefined,
   };
+}
+
+/**
+ * Generate only the cover image for a microstore (for wizard step 2).
+ * @param {Object} opts - { name, description, vibe, trends?, categories?, referenceImageUrl? }
+ * @returns {Promise<{ imageUrl: string | null }>}
+ */
+export async function generateMicrostoreCoverImage(opts = {}) {
+  const { name, description, vibe, trends, categories, referenceImageUrl } = opts;
+  let styleReferenceText = "";
+  const refUrl = (referenceImageUrl || "").trim();
+  if (refUrl) {
+    try {
+      const refAnalysis = await analyzeImage(refUrl, {
+        prompt:
+          'Describe the style, mood, colors, and visual tone of this image in 1-2 sentences for use as a style reference in an image generation prompt. Reply with JSON only: { "styleDescription": "your 1-2 sentence description" }. Be concise.',
+        responseFormat: "json_object",
+        maxTokens: 120,
+      });
+      const desc =
+        refAnalysis?.styleDescription ?? refAnalysis?.description ?? (typeof refAnalysis === "string" ? refAnalysis : null);
+      if (typeof desc === "string" && desc.trim()) {
+        styleReferenceText = ` Style reference: ${desc.trim().slice(0, 300)}.`;
+      }
+    } catch (err) {
+      console.warn("[microstoreCurationAgent] Reference image analysis failed:", err?.message);
+    }
+  }
+  const basePrompt = await buildCoverImagePrompt({
+    name,
+    description,
+    vibe,
+    trends,
+    categories,
+    styleReferenceText,
+  });
+  const generatedUrls = [];
+  try {
+    const res1 = await generateImage(`${basePrompt}. One fashion model.`, { aspectRatio: "3:4" });
+    if (res1?.imageUrl) generatedUrls.push(res1.imageUrl);
+  } catch (err) {
+    console.warn("[microstoreCurationAgent] generateMicrostoreCoverImage (single model) failed:", err?.message);
+  }
+  try {
+    const res2 = await generateImage(`${basePrompt}. Two or three fashion models.`, { aspectRatio: "3:4" });
+    if (res2?.imageUrl) generatedUrls.push(res2.imageUrl);
+  } catch (err) {
+    console.warn("[microstoreCurationAgent] generateMicrostoreCoverImage (multiple models) failed:", err?.message);
+  }
+  if (generatedUrls.length === 0) return { imageUrl: null };
+  const chosen = generatedUrls.length === 1 ? generatedUrls[0] : await selectStoreImage(generatedUrls, [], name, description, vibe || "");
+  return { imageUrl: chosen || null };
 }
 
 // ---------- Manual: name suggestion from description ----------
@@ -366,21 +709,32 @@ export async function suggestMicrostoreName(opts = {}) {
           .join("\n---\n")
       : "No examples configured.";
 
-  const systemPrompt = `You are a fashion microstore curator. Given a store description, suggest a short catchy title and optionally polish the description.
+  let systemPrompt = await getAgentPromptContent(AGENT_ID, "suggestName_system", { references: examplesText });
+  if (!systemPrompt) {
+    systemPrompt = `You are a fashion microstore curator. Given a store description, suggest a short catchy title and optionally polish the description.
 Use these examples as reference (match tone and style):
 ${examplesText}
 
 Output JSON only, no markdown, with keys: title, description, styleNotes, vibe, trends, categories.
-- title: One short, catchy store name.
+- title: One short store name: max ${MAX_NAME_WORDS} words, direct and understandable, mix of trend, occasion and category.
 - description: One sentence (polish the user's description if needed).
-- styleNotes: Array of 2 to ${STYLE_NOTES_COUNT} short style tips. Each item: { "text": "short tip" }.
+- styleNotes: Array of ${STYLE_NOTES_MIN} to ${STYLE_NOTES_MAX} short style tips. Each item: { "text": "short tip" }.
 - vibe: One vibe/occasion string.
 - trends: Comma-separated trends.
 - categories: Comma-separated categories.`;
+  }
 
-  const userPrompt = `Store description: ${desc}
+  let userPrompt = await getAgentPromptContent(AGENT_ID, "suggestName_user", {
+    description: desc,
+    vibe: vibe ? ` Vibe: ${vibe}.` : "",
+    trend: trend ? ` Trend: ${trend}.` : "",
+    category: category ? ` Category: ${category}.` : "",
+  });
+  if (!userPrompt) {
+    userPrompt = `Store description: ${desc}
 ${vibe ? ` Vibe: ${vibe}.` : ""}${trend ? ` Trend: ${trend}.` : ""}${category ? ` Category: ${category}.` : ""}
 Respond with JSON only.`;
+  }
 
   const llmOut = await complete(
     [
@@ -390,21 +744,61 @@ Respond with JSON only.`;
     { responseFormat: "json_object", maxTokens: 600 }
   );
 
-  const title = llmOut.title || llmOut.name || "Curated Store";
-  const descriptionOut = llmOut.description || desc;
+  let title = llmOut.title || llmOut.name || "Curated Store";
+  let descriptionOut = llmOut.description || desc;
   const vibeOut = llmOut.vibe || vibe || "";
   const trendsOut = llmOut.trends || trend || "";
   const categoriesOut = llmOut.categories || category || "";
+  const nameValidation = validateMicrostoreName(title, vibeOut, trendsOut, categoriesOut);
+  if (!nameValidation.ok) {
+    const words = title.trim().split(/\s+/).filter(Boolean);
+    if (words.length > MAX_NAME_WORDS) title = words.slice(0, MAX_NAME_WORDS).join(" ");
+    console.warn("[microstoreCurationAgent] suggestMicrostoreName name validation:", nameValidation.reason);
+  }
+  const descValidation = validateMicrostoreDescription(title, descriptionOut);
+  if (!descValidation.ok && !descriptionOut) descriptionOut = desc;
+  if (!descValidation.ok && !descriptionOut) descriptionOut = `Curated collection: ${title}`;
+  if (!descValidation.ok) console.warn("[microstoreCurationAgent] suggestMicrostoreName description validation:", descValidation.reason);
+
   let styleNotes = llmOut.styleNotes;
   if (!Array.isArray(styleNotes) || styleNotes.length === 0) {
     styleNotes = [{ text: "Mix textures and fits for a modern look." }];
   }
-  styleNotes = styleNotes.slice(0, STYLE_NOTES_COUNT).map((n) => (typeof n === "string" ? { text: n } : { text: n?.text || "Tip" }));
+  styleNotes = styleNotes.slice(0, STYLE_NOTES_MAX).map((n) => (typeof n === "string" ? { text: n } : { text: n?.text || "Tip" }));
 
   const styleNotesPayload = {
     text: styleNotes.find((n) => n.text)?.text || "",
-    links: styleNotes.map((n) => ({ title: n.text || "Tip", url: "", type: "text", description: n.text || "" })),
+    links: styleNotes.map((n, idx) => {
+      const preset = STYLE_CARD_PRESETS[idx % STYLE_CARD_PRESETS.length];
+      const link = {
+        title: n.text || "Tip",
+        url: "",
+        type: "text",
+        description: n.text || "",
+        backgroundColor: preset.backgroundColor,
+        fontStyle: preset.fontStyle,
+      };
+      if (n.imageUrl && String(n.imageUrl).trim()) link.imageUrl = String(n.imageUrl).trim();
+      return link;
+    }),
   };
+  const styleValidation = validateStyleNotes(styleNotesPayload);
+  if (!styleValidation.ok) {
+    console.warn("[microstoreCurationAgent] suggestMicrostoreName style notes validation:", styleValidation.reason);
+    if (styleNotesPayload.links.length < STYLE_NOTES_MIN) {
+      while (styleNotesPayload.links.length < STYLE_NOTES_MIN) {
+        const fallbackPreset = STYLE_CARD_PRESETS[styleNotesPayload.links.length % STYLE_CARD_PRESETS.length];
+        styleNotesPayload.links.push({
+          title: "Style tip",
+          url: "",
+          type: "text",
+          description: "Mix textures and fits for a modern look.",
+          backgroundColor: fallbackPreset.backgroundColor,
+          fontStyle: fallbackPreset.fontStyle,
+        });
+      }
+    }
+  }
 
   return {
     name: title,
@@ -413,6 +807,61 @@ Respond with JSON only.`;
     vibe: vibeOut,
     trends: trendsOut,
     categories: categoriesOut,
+  };
+}
+
+/**
+ * Suggest a single style note card for the microstore (one at a time for user to edit).
+ * @returns {{ card: { title: string, description?: string, backgroundColor?: string, fontStyle?: string } }}
+ */
+export async function suggestOneStyleNote(opts = {}) {
+  const { description, vibe, trend, category, existingTitles = [] } = opts;
+  const desc = (description || "").trim();
+  const contexts = await getActiveCreationContextsForLLM();
+  const examplesText =
+    contexts.length > 0
+      ? contexts
+          .map((c) => `Title: ${c.title}\nDescription: ${c.description || ""}`)
+          .join("\n---\n")
+      : "No examples configured.";
+  const existingText = existingTitles.length > 0 ? `Existing tips (do not duplicate): ${existingTitles.join("; ")}.` : "";
+  let systemPrompt = await getAgentPromptContent(AGENT_ID, "suggestOneStyleNote_system", { references: examplesText });
+  if (!systemPrompt) {
+    systemPrompt = `You are a fashion microstore curator. Suggest ONE short style tip as a card: title (short headline) and description (1 sentence).
+Use these store examples as reference: ${examplesText}
+Output JSON only: { "title": "short headline", "description": "one sentence tip" }. Keep it concise and actionable.`;
+  }
+  let userPrompt = await getAgentPromptContent(AGENT_ID, "suggestOneStyleNote_user", {
+    description: desc || "curated fashion",
+    vibe: vibe ? ` Vibe: ${vibe}.` : "",
+    trend: trend ? ` Trend: ${trend}.` : "",
+    category: category ? ` Category: ${category}.` : "",
+    existingTitles: existingText,
+  });
+  if (!userPrompt) {
+    userPrompt = `Store: ${desc || "curated fashion"}
+${vibe ? ` Vibe: ${vibe}.` : ""}${trend ? ` Trend: ${trend}.` : ""}${category ? ` Category: ${category}.` : ""}
+${existingText}
+Respond with one style tip as JSON only.`;
+  }
+  const llmOut = await complete(
+    [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    { responseFormat: "json_object", maxTokens: 150 }
+  );
+  const title = (llmOut.title || llmOut.text || "Style tip").toString().trim().slice(0, 80);
+  const descriptionOut = (llmOut.description || llmOut.text || "").toString().trim().slice(0, 200);
+  const presetIndex = existingTitles.length % STYLE_CARD_PRESETS.length;
+  const preset = STYLE_CARD_PRESETS[presetIndex];
+  return {
+    card: {
+      title: title || "Style tip",
+      description: descriptionOut || undefined,
+      backgroundColor: preset.backgroundColor,
+      fontStyle: preset.fontStyle,
+    },
   };
 }
 
@@ -498,6 +947,14 @@ export async function createSystemMicrostore(seed = null) {
 
   if (store && (curated.sections || []).length > 0) {
     await microstore.setMicroStoreProducts(store.id, curated.sections);
+  }
+
+  if (store) {
+    try {
+      await microstore.submitMicrostoreForApproval(store.id);
+    } catch (e) {
+      console.warn("[microstoreCurationAgent] submitForApproval after create failed:", e?.message);
+    }
   }
 
   return store ? microstore.getMicrostore(store.id, null, true) : null;

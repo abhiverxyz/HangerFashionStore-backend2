@@ -3,6 +3,7 @@ import { asyncHandler } from "../core/asyncHandler.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import * as userProfile from "../domain/userProfile/userProfile.js";
 import { run as runUserProfileAgent } from "../agents/userProfileAgent.js";
+import { run as runPersonalInsightAgent, shouldRefreshInsight } from "../agents/personalInsightAgent.js";
 import { triggerBuildPreferenceGraph } from "../domain/preferences/preferenceGraph.js";
 
 const router = Router();
@@ -52,6 +53,17 @@ router.get(
       }
       profile = await userProfile.getUserProfile(req.userId);
       if (!profile) return res.status(404).json({ error: "Profile not found" });
+    }
+
+    if (shouldRefreshInsight(profile)) {
+      try {
+        await runPersonalInsightAgent({ userId: req.userId });
+        profile = await userProfile.getUserProfile(req.userId);
+        if (!profile) return res.status(404).json({ error: "Profile not found" });
+      } catch (err) {
+        console.error("[profile] GET / personal insight error:", err?.message);
+        // return profile with existing or null personalInsight
+      }
     }
 
     res.json(profile);

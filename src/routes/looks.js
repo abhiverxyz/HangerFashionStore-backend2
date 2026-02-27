@@ -1,8 +1,10 @@
 import { Router } from "express";
+import { randomUUID } from "crypto";
 import multer from "multer";
 import { asyncHandler } from "../core/asyncHandler.js";
-import { requireAuth, optionalAuth } from "../middleware/requireAuth.js";
+import { requireAuth } from "../middleware/requireAuth.js";
 import * as lookDomain from "../domain/looks/look.js";
+import { uploadFile } from "../utils/storage.js";
 import { run as runLookAnalysisAgent } from "../agents/lookAnalysisAgent.js";
 import { run as runStyleReportAgent } from "../agents/styleReportAgent.js";
 
@@ -41,12 +43,64 @@ router.post(
       }
     }
 
+    const isNewLookFromFile = file?.buffer && !lookId;
+
+    if (isNewLookFromFile) {
+      // Image-first flow: upload, create look immediately, return. Run analysis in background.
+      const key = `looks/${req.userId}/${randomUUID()}`;
+      const ct = file.mimetype || "image/jpeg";
+      const { url } = await uploadFile(file.buffer, key, ct, { requireRemote: false });
+      const look = await lookDomain.createLook({
+        userId: req.userId,
+        imageUrl: url,
+        vibe: null,
+        occasion: null,
+        lookData: JSON.stringify({ status: "analyzing", comment: "Analyzing your look…" }),
+      });
+      (async () => {
+        try {
+          const result = await runLookAnalysisAgent({
+            userId: req.userId,
+            lookId: look.id,
+          });
+          if (req.userId) {
+            runStyleReportAgent({ userId: req.userId }).catch((err) =>
+              console.warn("[looks] style report trigger failed:", err?.message)
+            );
+          }
+        } catch (err) {
+          console.warn("[looks] background analysis failed:", err?.message);
+        }
+      })();
+      return res.status(201).json({
+        comment: "Analyzing your look…",
+        vibe: null,
+        occasion: null,
+        timeOfDay: null,
+        labels: [],
+        analysisComment: "Analyzing your look…",
+        suggestions: [],
+        classificationTags: [],
+        lookId: look.id,
+        look: {
+          id: look.id,
+          imageUrl: look.imageUrl,
+          vibe: look.vibe,
+          occasion: look.occasion,
+          lookData: look.lookData,
+          createdAt: look.createdAt?.toISOString?.() ?? look.createdAt,
+          updatedAt: look.updatedAt?.toISOString?.() ?? look.updatedAt,
+        },
+      });
+    }
+
     const result = await runLookAnalysisAgent({
       userId: req.userId,
       imageUrl: imageUrl || undefined,
       imageBuffer: file?.buffer,
       contentType: file?.mimetype,
       lookId: lookId || undefined,
+      fast: false,
     });
     if (req.userId) {
       runStyleReportAgent({ userId: req.userId }).catch((err) =>
@@ -57,15 +111,14 @@ router.post(
   })
 );
 
-/** GET /api/looks - list; if authenticated, filter by userId via query ?userId= */
+/** GET /api/looks - list; requires auth, filters by current user's userId */
 router.get(
   "/",
-  optionalAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const { userId, limit, offset } = req.query;
-    const filterUserId = userId || (req.userId ?? null);
+    const { limit, offset } = req.query;
     const result = await lookDomain.listLooks({
-      userId: filterUserId || undefined,
+      userId: req.userId,
       limit,
       offset,
     });

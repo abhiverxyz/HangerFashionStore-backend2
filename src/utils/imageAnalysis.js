@@ -37,6 +37,7 @@ const DEFAULT_PROMPT = `Analyze this fashion/outfit image. Return a single JSON 
 - gender: string or null
 
 "look": one object for the overall look:
+- shortTitle: string (1-3 words that best describe the look, e.g. "Casual Summer", "Bold Evening", "Minimal Work")
 - description: string (overall look description)
 - vibe: string (e.g. casual, formal, streetwear)
 - occasion: string (e.g. work, party, vacation)

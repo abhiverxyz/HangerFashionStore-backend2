@@ -4,8 +4,10 @@ import { normalizeId } from "../../core/helpers.js";
 export async function listLooks(opts = {}) {
   const { userId, limit = 24, offset = 0 } = opts;
   const prisma = getPrisma();
-  const where = {};
-  if (normalizeId(userId)) where.userId = normalizeId(userId);
+  const uid = normalizeId(userId);
+  const where = uid ? { userId: uid } : {};
+  // When no userId provided, return empty (avoids leaking all looks when auth is missing)
+  if (!uid) return { items: [], total: 0 };
 
   const [items, total] = await Promise.all([
     prisma.look.findMany({
