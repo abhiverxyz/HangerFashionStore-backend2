@@ -9,6 +9,11 @@
 import { complete } from "../utils/llm.js";
 import { generateImage } from "../utils/imageGeneration.js";
 import { analyzeImage } from "../utils/imageAnalysis.js";
+import {
+  getOneGeneratedImage,
+  createGeneratedImage,
+  SOURCE_MICROSTORE_COVER,
+} from "../domain/generatedImage.js";
 import { getActiveCreationContextsForLLM } from "../domain/microstore/creationContext.js";
 import { searchProducts } from "../domain/product/product.js";
 import { getUserProfile } from "../domain/userProfile/userProfile.js";
@@ -544,32 +549,58 @@ Respond with JSON only.`;
       console.warn("[microstoreCurationAgent] Reference image analysis failed:", err?.message);
     }
   }
-  const basePrompt = await buildCoverImagePrompt({
+  const cachedCover = await getOneGeneratedImage({
+    sourceType: SOURCE_MICROSTORE_COVER,
     name: title,
-    description,
-    vibe: vibeOut,
-    trends: trendsOut,
-    categories: categoriesOut,
-    styleReferenceText,
+    vibe: vibeOut || undefined,
   });
-  const generatedUrls = [];
-  try {
-    const promptSingle = `${basePrompt}. One fashion model.`;
-    const res1 = await generateImage(promptSingle, { aspectRatio: "3:4" });
-    if (res1?.imageUrl) generatedUrls.push(res1.imageUrl);
-  } catch (err) {
-    console.warn("[microstoreCurationAgent] Hero image (single model) failed:", err?.message);
+  if (cachedCover?.imageUrl) {
+    generatedImageUrl = cachedCover.imageUrl;
+  } else {
+    const basePrompt = await buildCoverImagePrompt({
+      name: title,
+      description,
+      vibe: vibeOut,
+      trends: trendsOut,
+      categories: categoriesOut,
+      styleReferenceText,
+    });
+    const generatedUrls = [];
+    try {
+      const promptSingle = `${basePrompt}. One fashion model.`;
+      const res1 = await generateImage(promptSingle, { aspectRatio: "3:4" });
+      if (res1?.imageUrl) generatedUrls.push(res1.imageUrl);
+    } catch (err) {
+      console.warn("[microstoreCurationAgent] Hero image (single model) failed:", err?.message);
+    }
+    try {
+      const promptMultiple = `${basePrompt}. Two or three fashion models.`;
+      const res2 = await generateImage(promptMultiple, { aspectRatio: "3:4" });
+      if (res2?.imageUrl) generatedUrls.push(res2.imageUrl);
+    } catch (err) {
+      console.warn("[microstoreCurationAgent] Hero image (multiple models) failed:", err?.message);
+    }
+    generatedImageUrl =
+      generatedUrls.length > 0 ? (generatedUrls.length === 1 ? generatedUrls[0] : generatedUrls) : null;
   }
-  try {
-    const promptMultiple = `${basePrompt}. Two or three fashion models.`;
-    const res2 = await generateImage(promptMultiple, { aspectRatio: "3:4" });
-    if (res2?.imageUrl) generatedUrls.push(res2.imageUrl);
-  } catch (err) {
-    console.warn("[microstoreCurationAgent] Hero image (multiple models) failed:", err?.message);
-  }
-  generatedImageUrl = generatedUrls.length > 0 ? (generatedUrls.length === 1 ? generatedUrls[0] : generatedUrls) : null;
 
   let coverImageUrl = await selectStoreImage(generatedImageUrl, currentProducts, title, description, vibeOut);
+  const isCoverFromGeneration =
+    !cachedCover?.imageUrl &&
+    coverImageUrl &&
+    (generatedImageUrl === coverImageUrl ||
+      (Array.isArray(generatedImageUrl) && generatedImageUrl.includes(coverImageUrl)));
+  if (isCoverFromGeneration) {
+    createGeneratedImage({
+      sourceType: SOURCE_MICROSTORE_COVER,
+      imageUrl: coverImageUrl,
+      name: title,
+      description: description || undefined,
+      vibe: vibeOut || undefined,
+      categories: categoriesOut || undefined,
+      trends: trendsOut || undefined,
+    }).catch((e) => console.warn("[microstoreCurationAgent] createGeneratedImage failed:", e?.message));
+  }
   const imageValidation = await validateCoverImage(coverImageUrl, title, description, vibeOut);
   if (!imageValidation.ok && currentProducts.length > 0) {
     const firstProductImage = currentProducts[0]?.images?.[0];
@@ -662,6 +693,13 @@ export async function generateMicrostoreCoverImage(opts = {}) {
       console.warn("[microstoreCurationAgent] Reference image analysis failed:", err?.message);
     }
   }
+  const cached = await getOneGeneratedImage({
+    sourceType: SOURCE_MICROSTORE_COVER,
+    name: name || undefined,
+    vibe: vibe || undefined,
+  });
+  if (cached?.imageUrl) return { imageUrl: cached.imageUrl };
+
   const basePrompt = await buildCoverImagePrompt({
     name,
     description,
@@ -685,6 +723,17 @@ export async function generateMicrostoreCoverImage(opts = {}) {
   }
   if (generatedUrls.length === 0) return { imageUrl: null };
   const chosen = generatedUrls.length === 1 ? generatedUrls[0] : await selectStoreImage(generatedUrls, [], name, description, vibe || "");
+  if (chosen) {
+    createGeneratedImage({
+      sourceType: SOURCE_MICROSTORE_COVER,
+      imageUrl: chosen,
+      name: name || undefined,
+      description: description || undefined,
+      vibe: vibe || undefined,
+      categories: categories || undefined,
+      trends: trends || undefined,
+    }).catch((e) => console.warn("[microstoreCurationAgent] createGeneratedImage failed:", e?.message));
+  }
   return { imageUrl: chosen || null };
 }
 

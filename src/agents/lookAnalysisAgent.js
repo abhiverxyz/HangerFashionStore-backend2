@@ -6,8 +6,9 @@
  */
 
 import { analyzeImage } from "../utils/imageAnalysis.js";
+import { resolveColor } from "../utils/colorUtils.js";
 import { uploadFile, resolveImageUrlForExternal } from "../utils/storage.js";
-import { complete } from "../utils/llm.js";
+import { complete, embedText } from "../utils/llm.js";
 import { randomUUID } from "crypto";
 import * as lookDomain from "../domain/looks/look.js";
 import { getUserProfile } from "../domain/userProfile/userProfile.js";
@@ -69,13 +70,23 @@ export async function run(input) {
   const timeOfDay = lookPart?.timeOfDay ?? lookPart?.time_of_day ?? null;
   const labels = Array.isArray(lookPart?.labels) ? lookPart.labels : [];
 
-  const itemsSummary = itemsRaw.slice(0, 20).map((it) => ({
-    type: it?.type ?? null,
-    description: it?.description ?? null,
-    category: it?.category_lvl1 ?? it?.category ?? null,
-    color: it?.color_primary ?? it?.color_family ?? null,
-    style: it?.style_family ?? it?.mood_vibe ?? null,
-  }));
+  const itemsSummary = itemsRaw.slice(0, 20).map((it) => {
+    const colorName = it?.color_primary ?? it?.color ?? it?.color_family ?? it?.color_name ?? null;
+    const resolved = colorName ? resolveColor(colorName) : null;
+    return {
+      type: it?.type ?? null,
+      description: it?.description ?? null,
+      category: it?.category_lvl1 ?? it?.category ?? null,
+      color: colorName ?? null,
+      color_hex: resolved?.hex ?? it?.color_hex ?? it?.colorHex ?? null,
+      color_brightness: resolved?.brightnessLabel ?? it?.color_brightness ?? it?.colorBrightness ?? null,
+      color_saturation: resolved?.saturationLabel ?? it?.color_saturation ?? it?.colorSaturation ?? null,
+      color_saturation_percent: resolved?.saturationPercent ?? null,
+      color_lightness_percent: resolved?.lightnessPercent ?? null,
+      color_is_neutral: resolved ? resolved.isNeutral : (it?.color_is_neutral === true || it?.colorIsNeutral === true),
+      style: it?.style_family ?? it?.mood_vibe ?? null,
+    };
+  });
 
   let analysisComment = comment;
   let suggestions = [];
@@ -158,6 +169,26 @@ export async function run(input) {
       occasion,
       lookData: JSON.stringify(lookData),
     });
+  }
+
+  // Store embedding for style profile (text from look + items); non-blocking on failure
+  try {
+    const parts = [comment, vibe, occasion].filter(Boolean);
+    if (labels?.length) parts.push(labels.join(", "));
+    (itemsSummary || []).slice(0, 20).forEach((it) => {
+      if (it?.description) parts.push(it.description);
+      else if (it?.category || it?.color) parts.push([it.category, it.color].filter(Boolean).join(" "));
+    });
+    const lookText = parts.join(". ").slice(0, 8000);
+    if (lookText) {
+      const vec = await embedText(lookText);
+      await lookDomain.updateLook(look.id, {
+        embedding: JSON.stringify(vec),
+        embeddingGeneratedAt: new Date(),
+      });
+    }
+  } catch (e) {
+    console.warn("[lookAnalysisAgent] embedding step failed:", e?.message);
   }
 
   return {

@@ -220,6 +220,30 @@ export async function getStorageObject(key) {
   return getLocalObject(key);
 }
 
+/**
+ * Read a stored image into a Buffer (for vision/analysis so external APIs never need to fetch our R2 URL).
+ * @param {string} imageUrl - Our storage URL (R2 or /uploads/key)
+ * @returns {Promise<Buffer|null>} - Image buffer or null if not our storage / read failed
+ */
+export async function getStoredImageAsBuffer(imageUrl) {
+  if (!imageUrl || typeof imageUrl !== "string") return null;
+  const key = urlToStorageKey(imageUrl.trim());
+  if (!key) return null;
+  const r2 = await getR2Object(key);
+  if (r2?.body) {
+    const chunks = [];
+    for await (const chunk of r2.body) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
+  const local = getLocalObject(key);
+  if (local?.body) {
+    const chunks = [];
+    for await (const chunk of local.body) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
+  return null;
+}
+
 function normalizeExtension(filename, contentType) {
   if (contentType) {
     const mimeToExt = {

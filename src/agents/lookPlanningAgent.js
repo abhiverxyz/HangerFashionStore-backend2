@@ -8,6 +8,7 @@ import { complete } from "../utils/llm.js";
 import { getUserProfile } from "../domain/userProfile/userProfile.js";
 import { buildUserContextFromProfile } from "../domain/userProfile/contextForAgents.js";
 import { composeLook } from "../domain/lookComposition/lookComposition.js";
+import { getOneGeneratedImage, createGeneratedImage, SOURCE_LOOK } from "../domain/generatedImage.js";
 
 const MIN_LOOKS = 1;
 const MAX_LOOKS = 10;
@@ -140,15 +141,36 @@ Provide exactly ${numLooks} items. Keep labels short (under 40 chars). Vibe and 
   for (let i = 0; i < plannedSlots.length; i += COMPOSE_LOOK_CONCURRENCY) {
     const chunk = plannedSlots.slice(i, i + COMPOSE_LOOK_CONCURRENCY);
     const results = await Promise.allSettled(
-      chunk.map((slot) =>
-        composeLook({
-          vibe: slot.vibe || overallVibe || undefined,
-          occasion: slot.occasion || occasionStr,
+      chunk.map(async (slot) => {
+        const vibe = slot.vibe || overallVibe || undefined;
+        const occasion = slot.occasion || occasionStr;
+        if (generateImages) {
+          const cached = await getOneGeneratedImage({
+            sourceType: SOURCE_LOOK,
+            vibe,
+            occasion,
+            imageStyle: imageStyleResolved,
+          });
+          if (cached?.imageUrl) {
+            return {
+              products: [],
+              productIds: [],
+              imageUrl: cached.imageUrl,
+              lookImageStyle: imageStyleResolved,
+              vibe: vibe ?? null,
+              occasion: occasion ?? null,
+              _fromCache: true,
+            };
+          }
+        }
+        return composeLook({
+          vibe,
+          occasion,
           userContext,
           generateImage: Boolean(generateImages),
           imageStyle: imageStyleResolved,
-        })
-      )
+        });
+      })
     );
     results.forEach((result, j) => {
       const slot = chunk[j];
@@ -167,6 +189,15 @@ Provide exactly ${numLooks} items. Keep labels short (under 40 chars). Vibe and 
           imageUrl,
           lookImageStyle: composed.lookImageStyle ?? imageStyleResolved,
         });
+        if (generateImages && imageUrl && !composed._fromCache) {
+          createGeneratedImage({
+            sourceType: SOURCE_LOOK,
+            imageUrl,
+            vibe: composed.vibe ?? slot.vibe ?? undefined,
+            occasion: composed.occasion ?? slot.occasion ?? undefined,
+            imageStyle: imageStyleResolved,
+          }).catch((e) => console.warn("[lookPlanningAgent] createGeneratedImage failed:", e?.message));
+        }
       } else {
         console.warn("[lookPlanningAgent] composeLook failed for slot:", slot.label, result.reason?.message);
         looks.push({

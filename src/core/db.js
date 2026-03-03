@@ -18,7 +18,9 @@ export function getPrisma() {
     connectionString,
     max: 20,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 10000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
   });
   const adapter = new PrismaPg(pool);
   prismaInstance = new PrismaClient({ adapter });

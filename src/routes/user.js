@@ -10,6 +10,24 @@ import * as allowedMicrostoreCreators from "../domain/allowedMicrostoreCreators/
 const router = Router();
 router.use(requireAuth);
 
+/** GET /api/user/me — current user (id, role, email, etc.) for UI (e.g. admin checks). */
+router.get(
+  "/me",
+  asyncHandler(async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: "Not authenticated" });
+    res.json({
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role || "user",
+      brandId: user.brandId,
+    });
+  })
+);
+
 /** GET /api/user/can-create-microstore — whether current user can create microstores */
 router.get(
   "/can-create-microstore",

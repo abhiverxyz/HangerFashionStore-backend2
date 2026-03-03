@@ -71,7 +71,7 @@ export async function updateLook(id, data) {
   const nid = normalizeId(id);
   if (!nid) return null;
   const prisma = getPrisma();
-  const allowed = ["lookData", "imageUrl", "vibe", "occasion"];
+  const allowed = ["lookData", "imageUrl", "vibe", "occasion", "embedding", "embeddingGeneratedAt"];
   const payload = {};
   for (const k of allowed) if (data[k] !== undefined) payload[k] = data[k];
   if (Object.keys(payload).length === 0) return getLook(nid);

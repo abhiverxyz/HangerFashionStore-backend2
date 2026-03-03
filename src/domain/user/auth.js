@@ -4,6 +4,7 @@ import { getPrisma } from "../../core/db.js";
 import { normalizeId } from "../../core/helpers.js";
 import { IS_PRODUCTION } from "../../core/constants.js";
 
+/** JWT signing secret. In production JWT_SECRET must be set (fail fast). */
 const JWT_SECRET = (() => {
   const secret = process.env.JWT_SECRET;
   if (IS_PRODUCTION && !secret) {

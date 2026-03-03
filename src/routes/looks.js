@@ -6,13 +6,15 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import * as lookDomain from "../domain/looks/look.js";
 import { uploadFile } from "../utils/storage.js";
 import { run as runLookAnalysisAgent } from "../agents/lookAnalysisAgent.js";
-import { run as runStyleReportAgent } from "../agents/styleReportAgent.js";
+import { looksAnalyzeLimiter } from "../middleware/rateLimit.js";
 
 const router = Router();
 const IMAGE_MIMES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
+/** 5MB max per file for mobile-friendly uploads and storage (review recommendation). */
+const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 const uploadAnalyze = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: UPLOAD_MAX_BYTES },
   fileFilter: (_req, file, cb) => {
     const ok = file.mimetype && IMAGE_MIMES.includes(file.mimetype.toLowerCase());
     cb(null, !!ok);
@@ -22,6 +24,7 @@ const uploadAnalyze = multer({
 /** POST /api/looks/analyze - analyze look image (fashion diary); persist look. Body: imageUrl?, lookId?; or multipart file. Auth required. */
 router.post(
   "/analyze",
+  looksAnalyzeLimiter,
   requireAuth,
   uploadAnalyze.single("file"),
   asyncHandler(async (req, res) => {
@@ -32,14 +35,15 @@ router.post(
     if (!imageUrl && !lookId && (!file || !file.buffer)) {
       return res.status(400).json({
         error: "Provide imageUrl (URL), lookId (to re-analyze), or upload a file (multipart field: file)",
+        code: "missing_input",
       });
     }
 
     if (lookId) {
       const existing = await lookDomain.getLook(lookId);
-      if (!existing) return res.status(404).json({ error: "Look not found" });
+      if (!existing) return res.status(404).json({ error: "Look not found", code: "look_not_found" });
       if (existing.userId && existing.userId !== req.userId) {
-        return res.status(403).json({ error: "Forbidden: you can only re-analyze your own look" });
+        return res.status(403).json({ error: "Forbidden: you can only re-analyze your own look", code: "forbidden" });
       }
     }
 
@@ -58,18 +62,34 @@ router.post(
         lookData: JSON.stringify({ status: "analyzing", comment: "Analyzing your look…" }),
       });
       (async () => {
-        try {
-          const result = await runLookAnalysisAgent({
-            userId: req.userId,
-            lookId: look.id,
-          });
-          if (req.userId) {
-            runStyleReportAgent({ userId: req.userId }).catch((err) =>
-              console.warn("[looks] style report trigger failed:", err?.message)
-            );
+        const maxAttempts = 3;
+        const delayMs = 2000;
+        let lastErr = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            await runLookAnalysisAgent({
+              userId: req.userId,
+              lookId: look.id,
+            });
+            return;
+          } catch (err) {
+            lastErr = err;
+            console.warn("[looks] background analysis failed (attempt %d/%d):", attempt, maxAttempts, err?.message);
+            if (attempt < maxAttempts) {
+              await new Promise((r) => setTimeout(r, delayMs));
+            }
           }
-        } catch (err) {
-          console.warn("[looks] background analysis failed:", err?.message);
+        }
+        try {
+          await lookDomain.updateLook(look.id, {
+            lookData: JSON.stringify({
+              status: "analysis_failed",
+              comment: "Analysis failed. Please try again.",
+              errorCode: "analysis_failed",
+            }),
+          });
+        } catch (updateErr) {
+          console.warn("[looks] failed to set look analysis_failed:", updateErr?.message);
         }
       })();
       return res.status(201).json({
@@ -102,11 +122,6 @@ router.post(
       lookId: lookId || undefined,
       fast: false,
     });
-    if (req.userId) {
-      runStyleReportAgent({ userId: req.userId }).catch((err) =>
-        console.warn("[looks] style report trigger failed:", err?.message)
-      );
-    }
     res.status(200).json(result);
   })
 );

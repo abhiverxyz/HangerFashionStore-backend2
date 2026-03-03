@@ -16,6 +16,7 @@ import storeForYouConstructRouter from "./storeForYouConstruct.js";
 import feedRouter from "./feed.js";
 import storageTestRouter from "./storageTest.js";
 import agentPromptsRouter from "./agentPrompts.js";
+import { getStyleReportSettings, saveStyleReportSettings } from "../../config/styleReportSettings.js";
 
 const router = Router();
 
@@ -66,6 +67,24 @@ router.post(
 );
 
 router.use(requireAdmin);
+
+/** GET /style-report-settings — for admin style report page */
+router.get(
+  "/style-report-settings",
+  asyncHandler(async (_req, res) => {
+    const settings = await getStyleReportSettings();
+    res.json(settings);
+  })
+);
+
+/** PUT /style-report-settings — update min/max looks, objective, tone, card config, style identity options */
+router.put(
+  "/style-report-settings",
+  asyncHandler(async (req, res) => {
+    const updated = await saveStyleReportSettings(req.body || {});
+    res.json(updated);
+  })
+);
 
 router.use(brandsRouter);
 router.use(modelConfigRouter);

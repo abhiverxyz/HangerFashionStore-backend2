@@ -103,6 +103,7 @@ const USER_PROFILE_SELECT_SAFE = {
   styleProfileUpdatedAt: true,
   latestStyleReportData: true,
   latestStyleReportGeneratedAt: true,
+  latestStyleReportInputFingerprint: true,
   preferenceGraphJson: true,
   preferenceGraphUpdatedAt: true,
 };
@@ -340,8 +341,9 @@ export async function submitQuiz(userId, payload = {}) {
  * Save latest style report data (Style Report Agent). B4.
  * @param {string} userId
  * @param {Object} reportData - JSON-serializable report payload for rendering
+ * @param {string|null} [inputFingerprint] - Cache key so we can return this report when inputs unchanged
  */
-export async function saveLatestStyleReport(userId, reportData) {
+export async function saveLatestStyleReport(userId, reportData, inputFingerprint = null) {
   const uid = normalizeId(userId);
   if (!uid) throw new Error("userId required");
   const prisma = getPrisma();
@@ -353,6 +355,7 @@ export async function saveLatestStyleReport(userId, reportData) {
     data: {
       latestStyleReportData: reportData ?? null,
       latestStyleReportGeneratedAt: now,
+      latestStyleReportInputFingerprint: inputFingerprint ?? null,
     },
   });
 }
@@ -360,7 +363,7 @@ export async function saveLatestStyleReport(userId, reportData) {
 /**
  * Get latest style report for a user (for GET /api/style-report).
  * @param {string} userId
- * @returns {Promise<{ reportData: object | null, generatedAt: string | null } | null>}
+ * @returns {Promise<{ reportData: object | null, generatedAt: string | null, inputFingerprint: string | null } | null>}
  */
 export async function getLatestStyleReport(userId) {
   const uid = normalizeId(userId);
@@ -368,12 +371,17 @@ export async function getLatestStyleReport(userId) {
   const prisma = getPrisma();
   const row = await prisma.userProfile.findUnique({
     where: { userId: uid },
-    select: { latestStyleReportData: true, latestStyleReportGeneratedAt: true },
+    select: {
+      latestStyleReportData: true,
+      latestStyleReportGeneratedAt: true,
+      latestStyleReportInputFingerprint: true,
+    },
   });
   if (!row) return null;
   return {
     reportData: row.latestStyleReportData ?? null,
     generatedAt: row.latestStyleReportGeneratedAt?.toISOString?.() ?? null,
+    inputFingerprint: row.latestStyleReportInputFingerprint ?? null,
   };
 }
 

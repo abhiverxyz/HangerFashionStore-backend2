@@ -7,6 +7,7 @@
 import { getProduct, listProducts } from "../product/product.js";
 import { generateImage } from "../../utils/imageGeneration.js";
 import { analyzeImage } from "../../utils/imageAnalysis.js";
+import { getStoredImageAsBuffer, resolveImageUrlForExternal } from "../../utils/storage.js";
 import { normalizeId } from "../../core/helpers.js";
 
 const DEFAULT_LOOK_PRODUCT_LIMIT = 8;
@@ -42,6 +43,7 @@ const DEFAULT_COMPLEMENTARY = ["Tops", "Bottoms", "Footwear"];
  * @param {Object} [opts.userContext] - Optional: preferredVibe?, preferredOccasion?, preferredCategoryLvl1? (array). Used for defaults and preferred categories.
  * @param {boolean} [opts.generateImage] - If true, generate an image and validate; regenerate if invalid (up to IMAGE_VALIDATE_MAX_RETRIES).
  * @param {string} [opts.imageStyle] - "flat_lay" | "on_model". Flat lay = items laid out; on_model = outfit on a person. Default "flat_lay".
+ * @param {string} [opts.ideaDescription] - Optional idea text (e.g. "Lightweight cardigans for stylish layering") to drive the generated image so it matches the idea.
  * @returns {Promise<{ products: Object[], productIds: string[], imageUrl?: string, lookImageStyle?: string, vibe?: string, occasion?: string }>}
  */
 export async function composeLook(opts = {}) {
@@ -54,9 +56,13 @@ export async function composeLook(opts = {}) {
     userContext,
     generateImage: doGenerateImage,
     imageStyle = "flat_lay",
+    ideaDescription,
   } = opts;
 
-  const resolvedImageStyle = imageStyle === "on_model" ? "on_model" : "flat_lay";
+  const resolvedImageStyle =
+    (typeof imageStyle === "string" && imageStyle.toLowerCase().replace(/\s+/g, "_") === "on_model")
+      ? "on_model"
+      : "flat_lay";
 
   const resolvedVibe = vibe ?? userContext?.preferredVibe ?? null;
   const resolvedOccasion = occasion ?? userContext?.preferredOccasion ?? null;
@@ -96,15 +102,24 @@ export async function composeLook(opts = {}) {
 
   let imageUrl;
   if (doGenerateImage) {
+    const lookContext = {
+      vibe: resolvedVibe,
+      occasion: resolvedOccasion,
+      products,
+      ...(ideaDescription && typeof ideaDescription === "string" && ideaDescription.trim()
+        ? { ideaDescription: ideaDescription.trim().slice(0, 200) }
+        : {}),
+    };
     console.log("[lookComposition] Generating image for look:", {
       vibe: resolvedVibe,
       occasion: resolvedOccasion,
       style: resolvedImageStyle,
       productCount: products.length,
+      ideaDescription: lookContext.ideaDescription ? `${lookContext.ideaDescription.slice(0, 40)}...` : undefined,
     });
     try {
       imageUrl = await generateAndValidateLookImage(
-        { vibe: resolvedVibe, occasion: resolvedOccasion, products },
+        lookContext,
         IMAGE_VALIDATE_MAX_RETRIES,
         resolvedImageStyle
       );
@@ -178,13 +193,16 @@ const IMAGE_VALIDATION_PROMPT_ON_MODEL = `Does this image show a coherent outfit
 
 /**
  * Generate look image and validate; retry with refined prompt if invalid.
- * @param {Object} lookContext - { vibe, occasion, products }
+ * @param {Object} lookContext - { vibe, occasion, products, ideaDescription? }
  * @param {number} maxRetries
  * @param {string} imageStyle - "flat_lay" | "on_model"
  */
 async function generateAndValidateLookImage(lookContext, maxRetries, imageStyle = "flat_lay") {
-  const validationPrompt =
+  let validationPrompt =
     imageStyle === "on_model" ? IMAGE_VALIDATION_PROMPT_ON_MODEL : IMAGE_VALIDATION_PROMPT_FLAT_LAY;
+  if (lookContext.ideaDescription && lookContext.ideaDescription.trim()) {
+    validationPrompt += ` Does the outfit clearly match or reflect this idea: "${lookContext.ideaDescription.trim().slice(0, 100)}"? If it clearly does not (e.g. wrong garment type), set "coherent" to false and explain in "reason".`;
+  }
   let lastUrl = null;
   let lastReason = "";
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -200,7 +218,9 @@ async function generateAndValidateLookImage(lookContext, maxRetries, imageStyle 
         continue;
       }
       lastUrl = imageUrl;
-      const validation = await analyzeImage(imageUrl, {
+      const imageForVision =
+        (await getStoredImageAsBuffer(imageUrl)) ?? (await resolveImageUrlForExternal(imageUrl));
+      const validation = await analyzeImage(imageForVision, {
         prompt: validationPrompt,
         responseFormat: "json_object",
         maxTokens: 200,
@@ -234,27 +254,40 @@ function toProductSummary(p) {
 
 /**
  * Build image generation prompt for the look. Two styles: flat_lay (items laid out) or on_model (outfit on a person).
- * @param {{ vibe?: string, occasion?: string, products: Object[] }} lookContext
+ * When ideaDescription is set, the prompt leads with it so the generated image matches the idea (e.g. cardigans, blazers).
+ * @param {{ vibe?: string, occasion?: string, products: Object[], ideaDescription?: string }} lookContext
  * @param {string} refineReason
  * @param {string} imageStyle - "flat_lay" | "on_model"
  */
-function buildLookImagePrompt({ vibe, occasion, products }, refineReason = "", imageStyle = "flat_lay") {
+function buildLookImagePrompt({ vibe, occasion, products, ideaDescription }, refineReason = "", imageStyle = "flat_lay") {
   const titles = products?.length
     ? products.slice(0, 6).map((p) => p.title).filter(Boolean).join(", ")
     : "";
-  if (imageStyle === "on_model") {
-    const parts = ["Fashion look, full outfit worn on a model, full body"];
+  const idea = ideaDescription && typeof ideaDescription === "string" ? ideaDescription.trim().slice(0, 150) : "";
+  const isOnModel = typeof imageStyle === "string" && imageStyle.toLowerCase().replace(/\s+/g, "_") === "on_model";
+  if (isOnModel) {
+    const parts = [];
+    if (idea) {
+      parts.push(`Outfit showcasing: ${idea}. Full body fashion look worn on a model.`);
+    } else {
+      parts.push("Fashion look, full outfit worn on a model, full body");
+    }
     if (vibe) parts.push(`${vibe} vibe`);
     if (occasion) parts.push(`for ${occasion}`);
-    if (titles) parts.push(`Outfit featuring: ${titles}`);
+    if (titles && !idea) parts.push(`Outfit featuring: ${titles}`);
     parts.push("clean background, high quality, editorial style");
     if (refineReason) parts.push(`Avoid: ${refineReason}`);
     return parts.join(". ");
   }
-  const parts = ["Fashion look, full outfit flat lay, items arranged together"];
+  const parts = [];
+  if (idea) {
+    parts.push(`Fashion look featuring: ${idea}. Items arranged together as flat lay.`);
+  } else {
+    parts.push("Fashion look, full outfit flat lay, items arranged together");
+  }
   if (vibe) parts.push(`${vibe} vibe`);
   if (occasion) parts.push(`for ${occasion}`);
-  if (titles) parts.push(`featuring: ${titles}`);
+  if (titles && !idea) parts.push(`featuring: ${titles}`);
   parts.push("clean background, high quality");
   if (refineReason) parts.push(`Avoid: ${refineReason}`);
   return parts.join(". ");

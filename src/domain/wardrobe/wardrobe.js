@@ -41,7 +41,7 @@ export async function getWardrobeItem(id) {
 
 /**
  * Create a wardrobe item (e.g. after upload or from extracted slot).
- * @param {Object} data - { userId, imageUrl, brand?, category?, color?, size?, tags?, source?, extractionId?, extractionSlotIndex? }
+ * @param {Object} data - { userId, imageUrl, brand?, category?, color?, colorHex?, colorBrightness?, colorSaturation?, colorIsNeutral?, size?, tags?, source?, extractionId?, extractionSlotIndex? }
  */
 export async function createWardrobeItem(data) {
   const prisma = getPrisma();
@@ -54,6 +54,12 @@ export async function createWardrobeItem(data) {
       brand: data.brand ?? null,
       category: data.category ?? null,
       color: data.color ?? null,
+      colorHex: data.colorHex ?? null,
+      colorBrightness: data.colorBrightness ?? null,
+      colorSaturation: data.colorSaturation ?? null,
+      colorSaturationPercent: data.colorSaturationPercent ?? null,
+      colorLightnessPercent: data.colorLightnessPercent ?? null,
+      colorIsNeutral: data.colorIsNeutral ?? null,
       size: data.size ?? null,
       tags: data.tags ?? null,
       source: data.source ?? null,
@@ -70,7 +76,20 @@ export async function updateWardrobeItem(id, data) {
   const nid = normalizeId(id);
   if (!nid) return null;
   const prisma = getPrisma();
-  const allowed = ["imageUrl", "brand", "category", "color", "size", "tags"];
+  const allowed = [
+    "imageUrl",
+    "brand",
+    "category",
+    "color",
+    "colorHex",
+    "colorBrightness",
+    "colorSaturation",
+    "colorSaturationPercent",
+    "colorLightnessPercent",
+    "colorIsNeutral",
+    "size",
+    "tags",
+  ];
   const payload = {};
   for (const k of allowed) if (data[k] !== undefined) payload[k] = data[k];
   if (Object.keys(payload).length === 0) return getWardrobeItem(nid);

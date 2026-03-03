@@ -6,8 +6,10 @@ import { Router } from "express";
 import { asyncHandler } from "../core/asyncHandler.js";
 import { optionalAuth, requireAuth } from "../middleware/requireAuth.js";
 import { runLookPlanning } from "../agents/lookPlanningAgent.js";
+import { lookPlanningLimiter } from "../middleware/rateLimit.js";
 
 const router = Router();
+router.use(lookPlanningLimiter);
 
 /**
  * POST /api/look-planning

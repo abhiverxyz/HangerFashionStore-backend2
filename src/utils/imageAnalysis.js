@@ -6,6 +6,7 @@
 
 import { getModelConfig } from "../config/modelConfig.js";
 import { analyzeWithProvider } from "./vision/index.js";
+import { getCanonicalColorNames } from "./colorUtils.js";
 
 /**
  * Normalize image input to a URL string for the API.
@@ -23,13 +24,18 @@ function toImageUrl(imageUrlOrBuffer) {
   throw new Error("imageUrlOrBuffer must be a URL string or Buffer");
 }
 
+const CANONICAL_COLOR_LIST = getCanonicalColorNames().join(", ");
+
 const DEFAULT_PROMPT = `Analyze this fashion/outfit image. Return a single JSON object with exactly two keys: "items" and "look".
+
+Colour: For each item set "color" and "color_primary" to exactly ONE colour from this list (the best match for the dominant colour): ${CANONICAL_COLOR_LIST}. Use exact spelling from the list. We derive hex and saturation from this name in code.
 
 "items": array of objects, one per visible item (clothing, footwear, accessories). For each item include (use null when not detectable):
 - type: "clothing" | "footwear" | "accessory"
 - description: string (full description for style reports)
 - category_lvl1, category_lvl2, category_lvl3: string (e.g. Tops, Shirts, Blouse)
-- color_primary, color_family: string
+- color: string (REQUIRED — one from the list above)
+- color_primary, color_family: string (same as color)
 - fabric_primary, pattern, fit, length, coverage: string
 - style_family, occasion_primary, occasion_secondary, mood_vibe: string
 - trend_tags: array of strings (e.g. ["minimalist", "oversized"])

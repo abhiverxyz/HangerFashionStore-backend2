@@ -175,6 +175,12 @@ router.post(
         if (analyzed.category != null && String(analyzed.category).trim()) updates.category = analyzed.category.trim();
         if (analyzed.color != null && String(analyzed.color).trim()) updates.color = analyzed.color.trim();
         if (analyzed.tags != null && String(analyzed.tags).trim()) updates.tags = analyzed.tags.trim();
+        if (analyzed.colorHex != null) updates.colorHex = analyzed.colorHex;
+        if (analyzed.colorBrightness != null) updates.colorBrightness = analyzed.colorBrightness;
+        if (analyzed.colorSaturation != null) updates.colorSaturation = analyzed.colorSaturation;
+        if (analyzed.colorSaturationPercent != null) updates.colorSaturationPercent = analyzed.colorSaturationPercent;
+        if (analyzed.colorLightnessPercent != null) updates.colorLightnessPercent = analyzed.colorLightnessPercent;
+        if (analyzed.colorIsNeutral != null) updates.colorIsNeutral = analyzed.colorIsNeutral;
         if (Object.keys(updates).length > 0) {
           await wardrobeDomain.updateWardrobeItem(item.id, updates);
         }
@@ -255,7 +261,20 @@ router.post(
   "/",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { imageUrl, brand, category, color, size, tags, extractionId, extractionSlotIndex } = req.body || {};
+    const {
+      imageUrl,
+      brand,
+      category,
+      color,
+      colorHex,
+      colorBrightness,
+      colorSaturation,
+      colorIsNeutral,
+      size,
+      tags,
+      extractionId,
+      extractionSlotIndex,
+    } = req.body || {};
     if (!imageUrl) return res.status(400).json({ error: "imageUrl required" });
     const item = await wardrobeDomain.createWardrobeItem({
       userId: req.userId,
@@ -263,6 +282,12 @@ router.post(
       brand,
       category,
       color,
+      colorHex: colorHex ?? null,
+      colorBrightness: colorBrightness ?? null,
+      colorSaturation: colorSaturation ?? null,
+      colorSaturationPercent: req.body.colorSaturationPercent ?? null,
+      colorLightnessPercent: req.body.colorLightnessPercent ?? null,
+      colorIsNeutral: colorIsNeutral ?? null,
       size,
       tags,
       source: extractionId != null ? "extraction" : null,
